@@ -1,0 +1,53 @@
+meta {
+  name: 08 XCom keys of load_staging_to_utm
+  type: http
+  seq: 8
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{ingestion_dag_run_id}}/taskInstances/load_staging_to_utm/xcomEntries
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const entries = (res.getBody() && res.getBody().xcom_entries) || [];
+  const hit = entries.find(e => e.key === "load_by_table");
+  if (hit) {
+    bru.setVar("ingestion_xcom_key", hit.key);
+  }
+}
+
+tests {
+  test("HTTP 200 with XCom entries", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+  });
+  test("key load_by_table was published by load_staging_to_utm and captured", function () {
+    expect(res.getBody().xcom_entries.map(e => e.key)).to.include("load_by_table");
+    expect(bru.getVar("ingestion_xcom_key")).to.equal("load_by_table");
+  });
+}
+
+docs {
+  ## What this proves
+  Task `load_staging_to_utm` published its outputs as XComs. The list carries keys only; values are fetched one key
+  at a time by the requests that follow.
+
+  ## Captures
+  - `ingestion_xcom_key`
+
+  ## Consumes
+  - `ingestion_dag_run_id`
+
+  ## When it fails
+  An empty list means `load_staging_to_utm` did not finish. Check the task instances request.
+}

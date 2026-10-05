@@ -1,0 +1,53 @@
+meta {
+  name: 18 Shim manifest
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{shim_url}}/checks/extraction/manifest?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("the check ran for the captured interval", function () {
+    expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+    expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+  });
+
+       test("manifest is complete: interval matches, both layers, every file checksummed", function () {
+         expect(res.getBody().measured.interval_matches_request).to.equal(true);
+         expect(res.getBody().measured.missing_required_fields).to.have.lengthOf(0);
+         expect(res.getBody().measured.files_missing_checksum).to.have.lengthOf(0);
+         expect(Object.keys(res.getBody().measured.layers)).to.include.members(["silver", "gold"]);
+       });
+       test("declared rows equal silver plus gold from the DAG", function () {
+         expect(res.getBody().measured.declared_rows_total).to.equal(bru.getVar("silver_row_count") + bru.getVar("gold_row_count"));
+       });
+}
+
+docs {
+  ## What this proves
+  The shim validates `manifest.json` structurally: required fields, interval, layers, a checksum on every file.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from the two `XCom validate_conf.interval_*_date` requests in this folder
+  - `silver_row_count`, `gold_row_count` from `09`, `10`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

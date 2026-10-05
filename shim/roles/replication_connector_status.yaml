@@ -1,0 +1,44 @@
+endpoint: /checks/replication/connector-status
+check: replication.connector_status
+summary: Both replication connectors (Debezium source and JDBC sink) RUNNING with every task RUNNING, read from the Kafka Connect REST API.
+identity:
+  kind: http_basic
+  name: nfl_check_connector_status
+  scope: >
+    Kafka Connect REST at nfl-kafka-connect:8083 (host: localhost:8097), read-only. Enforced by the Connect REST
+    extension ACL: GET on /connectors/<name>/status for the source and the sink connector only. No PUT/POST/DELETE, so this
+    identity cannot pause, resume, restart, or reconfigure a connector.
+credential_env: SHIM_CONNECTOR_STATUS_CONNECT_URL
+credential_env_note: >
+  URL may embed basic-auth userinfo. The URL *is* the credential, which is why it is
+  its own env var rather than a shared base URL plus a secret.
+dependencies:
+  - kafka_connect
+grants:
+  - "connect.rest.acl: allow GET /connectors/${NFL_DEBEZIUM_CONNECTOR}/status"
+  - "connect.rest.acl: allow GET /connectors/${NFL_SINK_CONNECTOR}/status"
+  - "connect.rest.acl: deny PUT,POST,DELETE /*"
+grants_rationale: >
+  Status is the entire job. Write verbs on the Connect API would let a monitoring
+  identity mutate the replication pipeline, which is the exact blast radius this
+  split exists to prevent.
+local_enforcement: >
+  NOT enforced locally. The local Kafka Connect REST API has no authentication and no
+  ACL extension, so any client on nfl-net can call any verb. What holds locally is that
+  this code path issues GET requests only. The connect.rest.acl grants are the
+  production target.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: DescribeReplicationTaskOnly
+      Effect: Allow
+      Action:
+        - dms:DescribeReplicationTasks
+        - dms:DescribeEndpoints
+        - dms:DescribeConnections
+      Resource:
+        - arn:aws:dms:${AWS_REGION}:${AWS_ACCOUNT_ID}:task:${NFL_DMS_TASK_ID}
+        - arn:aws:dms:${AWS_REGION}:${AWS_ACCOUNT_ID}:endpoint:*
+production_notes: >
+  Maps to DMS task state. Note the absence of dms:StartReplicationTask and
+  dms:StopReplicationTask — read-only by construction, matching the Connect ACL.

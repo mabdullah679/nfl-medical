@@ -1,0 +1,55 @@
+meta {
+  name: 10 deliver_sftp task log
+  type: http
+  seq: 10
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/{{delivery_task_id}}/logs/{{delivery_try_number}}
+  body: none
+  auth: basic
+}
+
+headers {
+  Accept: text/plain
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 200 with log text", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(String(res.getBody()).length).to.be.above(0);
+  });
+  test("the log is the log of the deliver_sftp task", function () {
+    expect(String(res.getBody())).to.include("task_id=deliver_sftp");
+  });
+  test("the task logged an upload, not a skip", function () {
+    expect(String(res.getBody())).to.match(/(redelivered_forced|delivered): \/\S+ \(\d+ bytes, sha256 [0-9a-f]{64}\)/);
+    expect(String(res.getBody())).to.not.include("skipped_already_delivered:");
+  });
+  test("delivery finished without a traceback", function () {
+    expect(String(res.getBody())).to.not.include("Traceback (most recent call last)");
+  });
+}
+
+docs {
+  ## What this proves
+  The raw log of the delivery step of the forced run, with its closing line naming the action, the final path, the size and the sha256.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `delivery_dag_run_id` from `07`
+  - `delivery_task_id`, `delivery_try_number` from `09 deliver_sftp task instance`
+
+  ## When it fails
+  404: the try number does not exist (the task never started). The traceback, if any, is in this response body.
+}

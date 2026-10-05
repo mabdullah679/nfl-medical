@@ -1,0 +1,51 @@
+meta {
+  name: 13 Airflow audit log of triggers
+  type: http
+  seq: 13
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/eventLogs?event=api.post_dag_run&order_by=-when&limit=25
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the triggers this collection sent are on record", function () {
+    const dags = res.getBody().event_logs.map(e => e.dag_id);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+    expect(dags.some(d => String(d).startsWith("nfl_"))).to.equal(true);
+    expect(res.getBody().event_logs.filter(e => e.event !== "api.post_dag_run")).to.have.lengthOf(0);
+  });
+  test("every entry says who did it and when", function () {
+    for (const e of res.getBody().event_logs) {
+      expect(e.owner, JSON.stringify(e)).to.be.a("string").and.not.equal("");
+      expect(e.when).to.be.a("string");
+    }
+  });
+}
+
+docs {
+  ## What this proves
+  Airflow's own audit trail: who triggered which DAG run through the REST API, when, and with which conf (`extra`).
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Zero entries: nothing has been triggered through the API or UI on this Airflow yet.
+}

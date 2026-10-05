@@ -1,0 +1,57 @@
+meta {
+  name: 10 Shim connector status
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{shim_url}}/checks/replication/connector-status
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("the verdict covers both halves of replication: the Debezium source and the JDBC sink", function () {
+    const m = res.getBody().measured;
+    expect(m.connectors_required).to.have.members([bru.getEnvVar("source_connector_name"), bru.getEnvVar("sink_connector_name")]);
+    expect(m.connectors.source.connector).to.equal(bru.getEnvVar("source_connector_name"));
+    expect(m.connectors.sink.connector).to.equal(bru.getEnvVar("sink_connector_name"));
+    expect(m.connectors_unhealthy, JSON.stringify(m.connectors_unhealthy)).to.have.lengthOf(0);
+  });
+  test("each connector is RUNNING with at least one task and every task running", function () {
+    for (const side of ["source", "sink"]) {
+      const c = res.getBody().measured.connectors[side];
+      expect(c.connector_state, side).to.equal("RUNNING");
+      expect(c.task_count, side).to.be.at.least(1);
+      expect(c.tasks_running, side).to.equal(c.task_count);
+      expect(c.tasks_failed, side).to.equal(0);
+    }
+  });
+}
+
+docs {
+  ## What this proves
+  The shim's single verdict on BOTH replication connectors, the Debezium MySQL source and the JDBC sink into
+  staging: each RUNNING, each with at least one task, every task running. Either one down makes it red
+  (`90-chaos` scenario A pauses the source, scenario G pauses the sink). This is the check an alert would be
+  wired to.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `source_connector_name`, `sink_connector_name` (environment)
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

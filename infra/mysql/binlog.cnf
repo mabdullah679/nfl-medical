@@ -1,0 +1,15 @@
+[mysqld]
+server-id                 = 184054
+log-bin                   = mysql-bin
+binlog_format             = ROW
+binlog_row_image          = FULL
+binlog_expire_logs_seconds = 604800
+
+gtid_mode                 = ON
+enforce_gtid_consistency  = ON
+
+# Debezium's snapshot phase reads a consistent view; the default REPEATABLE READ
+# plus the global read lock is what makes the snapshot->stream handoff lossless.
+transaction_isolation     = REPEATABLE-READ
+
+skip_name_resolve         = ON

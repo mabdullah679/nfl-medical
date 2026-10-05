@@ -1,0 +1,55 @@
+meta {
+  name: 18 XCom deliver_sftp.copies_on_sftp
+  type: http
+  seq: 18
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/deliver_sftp/xcomEntries/copies_on_sftp?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("copies_on_sftp", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key copies_on_sftp", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("copies_on_sftp");
+  });
+  test("value has the expected shape and was captured as copies_on_sftp", function () {
+    expect(res.getBody().value).to.be.a("number");
+    expect(bru.getVar("copies_on_sftp")).to.deep.equal(res.getBody().value);
+  });
+
+  test("exactly one copy: the forced delivery replaced the file, it did not add a second one", function () {
+    expect(res.getBody().value).to.equal(1);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `deliver_sftp` published under `copies_on_sftp`: how many copies of this report exist on the SFTP server.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `copies_on_sftp`
+
+  ## Consumes
+  - `delivery_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `copies_on_sftp` (it failed or was skipped before that point).
+}

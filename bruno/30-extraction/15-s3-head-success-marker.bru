@@ -1,0 +1,43 @@
+meta {
+  name: 15 S3 HEAD _SUCCESS marker
+  type: http
+  seq: 15
+}
+
+head {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{s3_marker_key}}
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+tests {
+  test("HTTP 200: the marker object exists", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the marker is a zero-byte object", function () {
+    expect(Number(res.getHeader("content-length"))).to.equal(0);
+  });
+}
+
+docs {
+  ## What this proves
+  The `_SUCCESS` marker exists and is empty. Reporting's pre-check waits on exactly this object.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `s3_marker_key` from `06 XCom publish.marker_key`
+
+  ## When it fails
+  404: extraction did not publish, or 90-chaos removed the marker and its restore request (`D12`) was not sent.
+}

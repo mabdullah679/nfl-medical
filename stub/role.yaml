@@ -1,0 +1,61 @@
+service: dms-control-plane-stub
+port: 8098
+summary: >
+  Serve a DMS-shaped control plane for local testing. Reads live Debezium state
+  and Postgres row counts; a DMS field with no such source is returned as null.
+  Replicates nothing.
+
+identity:
+  kind: postgres_role
+  name: nfl_stub_reader
+  scope: >
+    Read-only on the replication target's staging schema. Row counts are the
+    entire job, so SELECT is the whole requirement. No write verb, no other
+    schema, and no S3, Secrets Manager, or KMS access of any kind.
+credential_env: NFL_PG_PASSWORD
+credential_env_note: >
+  Host/port/db/user are separate non-secret env vars; only the password is a
+  secret. Declared on its own so the stub can be granted a credential distinct
+  from every shim check, per the project-wide per-endpoint identity rule.
+
+dependencies:
+  - postgres        # measured: COUNT(*) per staging table
+  - kafka_connect   # measured: connector + task state (read-only, unauthenticated locally)
+
+grants:
+  - "GRANT CONNECT ON DATABASE ${NFL_PG_DB} TO nfl_stub_reader"
+  - "GRANT USAGE ON SCHEMA ${NFL_PG_STAGING_SCHEMA} TO nfl_stub_reader"
+  - "GRANT SELECT ON ALL TABLES IN SCHEMA ${NFL_PG_STAGING_SCHEMA} TO nfl_stub_reader"
+  - "ALTER DEFAULT PRIVILEGES IN SCHEMA ${NFL_PG_STAGING_SCHEMA} GRANT SELECT ON TABLES TO nfl_stub_reader"
+grants_rationale: >
+  The stub only counts rows, to report FullLoadRows and row presence per captured table. Any write
+  grant would let a reporting surface mutate the replication target, which is
+  the blast radius this split exists to prevent. Read access is also why its
+  numbers can be trusted as measurements: it cannot have caused them.
+
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: DescribeOnlyNoControl
+      Effect: Allow
+      Action:
+        - dms:DescribeReplicationTasks
+        - dms:DescribeTableStatistics
+        - dms:DescribeReplicationInstances
+        - dms:DescribeEndpoints
+      Resource:
+        - arn:aws:dms:${AWS_REGION}:${AWS_ACCOUNT_ID}:task:${NFL_DMS_TASK_ID}
+        - arn:aws:dms:${AWS_REGION}:${AWS_ACCOUNT_ID}:rep:${NFL_DMS_INSTANCE_ID}
+        - arn:aws:dms:${AWS_REGION}:${AWS_ACCOUNT_ID}:endpoint:*
+
+production_notes: >
+  On repointing to real AWS (Bruno environment variable dms_endpoint), this service is REPLACED by real
+  DMS rather than deployed alongside it, so the policy above is what the CALLER
+  needs — the shape the stub's four read operations imply.
+
+  Deliberately absent: dms:StartReplicationTask and dms:StopReplicationTask.
+  The stub implements both, but they only record the command and never mutate
+  replication. Granting their real equivalents to a monitoring caller would hand
+  a read surface the ability to halt production replication. If an operator
+  genuinely needs to start or stop a task, that belongs to a separate, explicitly
+  elevated identity — not to this one.

@@ -1,0 +1,85 @@
+meta {
+  name: 01 DMS DescribeReplicationTasks
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.DescribeReplicationTasks
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {}
+}
+
+script:post-response {
+  const tasks = (res.getBody() && res.getBody().ReplicationTasks) || [];
+  const task = tasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+  if (task) {
+    bru.setVar("dms_task_arn", task.ReplicationTaskArn);
+    bru.setVar("dms_task_status", task.Status);
+  }
+}
+
+tests {
+      test("HTTP 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+      test("the platform's replication task exists and its ARN was captured", function () {
+        const ids = res.getBody().ReplicationTasks.map(t => t.ReplicationTaskIdentifier);
+        expect(ids).to.include(bru.getEnvVar("dms_task_identifier"));
+        expect(bru.getVar("dms_task_arn")).to.match(/^arn:aws:dms:/);
+      });
+      test("the task is running", function () {
+        expect(bru.getVar("dms_task_status")).to.equal("running");
+      });
+      test("on the stub, Status is derived from a connector Kafka Connect reports RUNNING", function () {
+        if (String(bru.getEnvVar("dms_is_stub")) !== "true") { return; }
+        const task = res.getBody().ReplicationTasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+        expect(task._provenance.Status).to.equal("derived");
+        expect(task._stub_upstream.kafka_connect.connector_state).to.equal("RUNNING");
+        expect(task._stub_upstream.kafka_connect.task_states).to.deep.equal(["RUNNING"]);
+      });
+
+  test("the response is labelled synthetic exactly when the environment says this endpoint is the stub", function () {
+    const isStub = String(bru.getEnvVar("dms_is_stub")) === "true";
+    expect(res.getHeader("x-nfl-stub") === "true").to.equal(isStub);
+  });
+}
+
+docs {
+  ## What this proves
+  The replication task `{{dms_task_identifier}}` exists and is running. Same request, same headers, against
+  either endpoint: the local stub on 8098 (`local` environment) or real AWS DMS (`aws` environment). On the
+  stub, `Status` is `derived`: a translation of the Debezium connector and task states read from Kafka Connect
+  (the raw states are in `_stub_upstream.kafka_connect`). Start and Stop commands never change it.
+
+  ## Captures
+  - `dms_task_arn`
+  - `dms_task_status`
+
+  ## Consumes
+  - `dms_endpoint`, `dms_task_identifier`, `dms_is_stub`, AWS credentials (environment)
+
+  ## When it fails
+  400 with no `X-Amz-Target`: the header was edited away. 404 `UnknownOperationException`: the operation name is
+  wrong. On the local stub read `_provenance` beside each field: `measured` was read from a live system,
+  `derived` was computed from a measured value by the rule in `_provenance_detail`, `unknown` is null on
+  purpose. On real AWS a 400 `AccessDeniedException` names the missing `dms:` permission.
+}

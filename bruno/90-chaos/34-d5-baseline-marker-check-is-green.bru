@@ -1,0 +1,50 @@
+meta {
+  name: 34 D5 Baseline marker check is green
+  type: http
+  seq: 34
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/extraction/s3-marker?interval_start={{interval_start_date_marker}}&interval_end={{interval_end_date_marker}}
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const b = res.getBody() || {};
+  const key = b.measured && b.measured.key_checked;
+  const green = res.getStatus() === 200 && b.ok === true && b.measured.exists === true && key === bru.getVar("chaos_marker_key");
+  bru.setVar("chaos_marker_baseline_ok", green);
+  bru.setVar("chaos_marker_baseline_key", green ? key : "");
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("the shim is looking at the key that is about to be removed", function () {
+    expect(res.getBody().measured.key_checked).to.equal(bru.getVar("chaos_marker_key"));
+  });
+}
+
+docs {
+  ## What this proves
+  Baseline before the injection: the marker exists.
+
+  ## Captures
+  - `chaos_marker_baseline_ok`, `chaos_marker_baseline_key` (the guard `D6` checks before it deletes)
+
+  ## Consumes
+  - `interval_start_date_marker`, `interval_end_date_marker` from `D3`, `D4`
+  - `chaos_marker_key` from `D2`
+
+  ## When it fails
+  Already red: a previous chaos run did not restore. Send `D12 RESTORE put the S3 _SUCCESS marker back` and start again.
+}

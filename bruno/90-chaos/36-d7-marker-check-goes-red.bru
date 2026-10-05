@@ -1,0 +1,45 @@
+meta {
+  name: 36 D7 Marker check goes red
+  type: http
+  seq: 36
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/extraction/s3-marker?interval_start={{interval_start_date_marker}}&interval_end={{interval_end_date_marker}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is fail", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(false);
+    expect(res.getBody().state).to.equal("fail");
+  });
+  test("the check says the marker does not exist", function () {
+    expect(res.getBody().measured.exists).to.equal(false);
+    expect(res.getBody().measured.key_checked).to.equal(bru.getVar("chaos_marker_key"));
+  });
+}
+
+docs {
+  ## What this proves
+  The marker check detects the missing marker: HTTP 200 (it ran), `ok: false`. `D8` to `D11` start an `nfl_reporting` run in this state and show that it retries `wait_for_success_marker`, fails and alerts.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date_marker`, `interval_end_date_marker` from `D3`, `D4`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

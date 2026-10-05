@@ -1,0 +1,74 @@
+meta {
+  name: 19 Shim delivery SFTP after the forced delivery
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{shim_url}}/checks/delivery/sftp?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}&report={{delivery_report_name}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+
+      test("the check ran for the captured interval", function () {
+        expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+        expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+      });
+
+      test("the file is under its final name and the temp name is absent", function () {
+        expect(res.getBody().measured.final_name_present).to.equal(true);
+        expect(res.getBody().measured.temp_name_present).to.equal(false);
+        expect(res.getBody().measured.leftover_partial_names).to.have.lengthOf(0);
+        expect(res.getBody().measured.final_path).to.equal(bru.getVar("sftp_final_path"));
+      });
+      test("the file on SFTP was written by this run's deliver_sftp task", function () {
+        const mtime = res.getBody().measured.delivered_mtime;
+        expect(mtime, "mtime before the task started").to.be.at.least(bru.getVar("delivery_task_started_epoch") - 2);
+        expect(mtime, "mtime after the task ended").to.be.at.most(bru.getVar("delivery_task_ended_epoch") + 2);
+        expect(mtime, "not newer than the at-rest file").to.be.above(bru.getVar("at_rest_mtime"));
+      });
+      test("the shim verified the pinned SSH host key", function () {
+        expect(res.getBody().measured.host_key_verified).to.equal(true);
+      });
+      test("bytes on SFTP hash to what the DAG read back, and to the S3 source", function () {
+        expect(res.getBody().measured.delivered_sha256).to.equal(bru.getVar("delivered_sha256"));
+        expect(res.getBody().measured.delivered_size_bytes).to.equal(bru.getVar("delivered_size_bytes"));
+        expect(res.getBody().measured.checksum_matches_source).to.equal(true);
+        expect(res.getBody().measured.size_matches_source).to.equal(true);
+      });
+}
+
+docs {
+  ## What this proves
+  The delivery proof. After the forced run: the report is under its final name, the temp name is gone, the
+  bytes hash to what the DAG read back and to the S3 source, and the file's modification time on the SFTP
+  server lies inside the `deliver_sftp` task's own start and end times and is newer than the file that was
+  at rest in request 06. So the file there now was uploaded by this run, through the temp-name and rename
+  path. Non-HTTP made sendable: the shim logs in with a key-only read-only account and verifies the pinned
+  host key.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date`, `delivery_report_name` from `02` to `04`
+  - `at_rest_mtime` from `06`
+  - `delivery_task_started_epoch`, `delivery_task_ended_epoch` from `09`
+  - `sftp_final_path` from `15`, `delivered_sha256` from `16`, `delivered_size_bytes` from `17`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

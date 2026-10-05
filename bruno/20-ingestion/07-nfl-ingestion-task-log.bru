@@ -1,0 +1,54 @@
+meta {
+  name: 07 nfl_ingestion task log
+  type: http
+  seq: 7
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{ingestion_dag_run_id}}/taskInstances/{{ingestion_task_id}}/logs/{{ingestion_try_number}}
+  body: none
+  auth: basic
+}
+
+headers {
+  Accept: text/plain
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 200 with log text", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(String(res.getBody()).length).to.be.above(0);
+  });
+
+    test("the log is the log of the captured task and try", function () {
+      expect(String(res.getBody())).to.include("task_id=" + bru.getVar("ingestion_task_id"));
+      expect(String(res.getBody())).to.include("attempt=" + bru.getVar("ingestion_try_number"));
+    });
+    test("the task finished without a traceback", function () {
+      expect(String(res.getBody())).to.not.include("Traceback (most recent call last)");
+    });
+}
+
+docs {
+  ## What this proves
+  The raw log of the load step, as plain text. This is the response to read when a task is red.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `ingestion_dag_run_id` from `Trigger nfl_ingestion`
+  - `ingestion_task_id`, `ingestion_try_number` from `nfl_ingestion task instances`
+
+  ## When it fails
+  404: the try number does not exist (the task never started). An empty log usually means the task is
+  still queued. The traceback, if any, is in this response body.
+}

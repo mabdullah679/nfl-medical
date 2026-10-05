@@ -1,0 +1,66 @@
+meta {
+  name: 04 Failed task instances across the pipeline
+  type: http
+  seq: 4
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+post {
+  url: {{airflow_url}}/api/v1/dags/~/dagRuns/~/taskInstances/list
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+body:json {
+  {
+    "dag_ids": ["nfl_ingestion", "nfl_extraction", "nfl_reporting"],
+    "state": ["failed"],
+    "page_limit": 100
+  }
+}
+
+script:post-response {
+  bru.setVar("failed_task_count", res.getBody().total_entries);
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("both filters were applied: every returned task instance is failed and belongs to a pipeline DAG", function () {
+    const other = res.getBody().task_instances.filter(t => t.state !== "failed" || !["nfl_ingestion", "nfl_extraction", "nfl_reporting"].includes(t.dag_id));
+    expect(other.map(t => t.dag_id + "/" + t.task_id + "=" + t.state)).to.have.lengthOf(0);
+  });
+  test("none of them belongs to the successful reporting run resolved in 03", function () {
+    const mine = res.getBody().task_instances.filter(t => t.dag_run_id === bru.getVar("obs_dag_run_id_raw"));
+    expect(mine.map(t => t.task_id)).to.have.lengthOf(0);
+  });
+}
+
+docs {
+  ## What this proves
+  The task-level failure view across the three stages. Each failed task instance here fired the single
+  Operations failure hook, which writes an alert row to `observability.pipeline_event`; those rows are
+  returned by `11` and `12` below. The count is captured, not asserted: failed tasks from `90-chaos` are
+  expected to be on record. The page holds at most 100; `05` asks the exact question for the resolved run.
+
+  ## Captures
+  - `failed_task_count`
+
+  ## Consumes
+  - `obs_dag_run_id_raw` from `03`
+
+  ## When it fails
+  A non-200 here is an Airflow API problem, not a pipeline one.
+}

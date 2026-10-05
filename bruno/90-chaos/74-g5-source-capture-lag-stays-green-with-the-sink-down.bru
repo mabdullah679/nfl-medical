@@ -1,0 +1,53 @@
+meta {
+  name: 74 G5 Source capture lag stays green with the sink down
+  type: http
+  seq: 74
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/replication/lag
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+
+      test("the check says it is not end-to-end and names the source connector only", function () {
+        expect(res.getBody().measured.end_to_end).to.equal(false);
+        expect(res.getBody().measured.connector).to.equal(bru.getEnvVar("source_connector_name"));
+        expect(res.getBody().summary).to.include("NOT end-to-end");
+      });
+}
+
+docs {
+  ## What this proves
+  What the lag check does NOT see, shown on purpose: with the sink paused and nothing landing in staging,
+  source capture lag is still green, because it measures the MySQL to Kafka hop only. It says so itself
+  (`end_to_end: false`). The dead sink is caught by `G4` at once, and by the heartbeat in
+  `20-ingestion/14 Shim ingestion freshness` once its age passes the limit (300 s by default; this scenario
+  does not wait that long).
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Red here means the source is unhealthy too, which this scenario did not cause. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

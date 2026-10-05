@@ -1,0 +1,61 @@
+endpoint: /checks/replication/lag
+check: replication.source_capture_lag
+summary: Source capture lag, MySQL to Kafka only (binlog write position vs the position the Debezium source connector has committed). Not end-to-end; says nothing about the JDBC sink or staging.
+identity:
+  kind: mysql_user
+  name: nfl_check_replication_lag
+  scope: >
+    MySQL source at nfl-mysql:3306 (host port 3307), global REPLICATION CLIENT only, no
+    table reads.
+credential_env: SHIM_REPLICATION_LAG_MYSQL_DSN
+credential_env_companions:
+  - SHIM_REPLICATION_LAG_CONNECT_URL
+credential_env_note: >
+  This endpoint needs BOTH sides of the comparison: the source binlog position (MySQL)
+  and the consumed position (Kafka Connect). It therefore holds two credentials, each
+  read-only on its own system, rather than borrowing the connector-status role's
+  credential — sharing would couple two endpoints to one identity.
+dependencies:
+  - mysql_source
+  - kafka_connect
+grants:
+  - "CREATE USER 'nfl_check_replication_lag'@'%' IDENTIFIED BY '<secret>';"
+  - "GRANT REPLICATION CLIENT ON *.* TO 'nfl_check_replication_lag'@'%';"
+  - "connect.rest.acl: allow GET /connectors/${NFL_DEBEZIUM_CONNECTOR}/status"
+  - "connect.rest.acl: allow GET /connectors/${NFL_DEBEZIUM_CONNECTOR}/offsets"
+  - "connect.rest.acl: deny PUT,POST,DELETE,PATCH /*"
+grants_rationale: >
+  SHOW MASTER STATUS / SHOW BINARY LOG STATUS requires REPLICATION CLIENT. It is a
+  server-scope privilege with no table-data access, so this identity cannot read any
+  business row. Deliberately NOT granted: SELECT, REPLICATION SLAVE, SUPER. On the
+  Connect side only GET is allowed: PATCH /offsets can RESET a connector's position, so
+  it is denied alongside the other write verbs.
+local_enforcement: >
+  MySQL side ENFORCED: nfl_check_replication_lag is created by
+  infra/mysql/init/03-lag-check-user.sql.tmpl with REPLICATION CLIENT only, and a SELECT
+  on any hawks table is refused by the server. Connect side NOT enforced locally: the
+  local Kafka Connect REST API has no authentication or ACL; this code path issues GET
+  requests only.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: DescribeReplicationState
+      Effect: Allow
+      Action:
+        - dms:DescribeReplicationTasks
+        - dms:DescribeTableStatistics
+      Resource:
+        - arn:aws:dms:${AWS_REGION}:${AWS_ACCOUNT_ID}:task:${NFL_DMS_TASK_ID}
+    - Sid: ReadReplicationLagMetric
+      Effect: Allow
+      Action:
+        - cloudwatch:GetMetricStatistics
+      Resource: "*"
+      Condition:
+        StringEquals:
+          cloudwatch:namespace: AWS/DMS
+production_notes: >
+  In AWS the lag measurement comes from the DMS CDCLatencySource/CDCLatencyTarget
+  CloudWatch metrics rather than binlog arithmetic, so the MySQL user disappears and
+  only the IAM policy above remains. The endpoint keeps its contract; the backend
+  swaps behind SHIM_REPLICATION_BACKEND.

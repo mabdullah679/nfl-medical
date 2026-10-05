@@ -1,0 +1,49 @@
+endpoint: /checks/lineage
+check: lineage
+summary: Whether every pipeline stage has a recorded event for exactly this interval, and how each stage's latest attempt ended.
+identity:
+  kind: postgres_role
+  name: nfl_check_lineage
+  scope: >
+    NFL Postgres as the dedicated read-only role nfl_check_lineage. Reads five columns
+    of observability.pipeline_event and nothing in staging or utm. It cannot read event
+    messages or metrics.
+credential_env: SHIM_LINEAGE_PG_DSN
+dependencies:
+  - nfl_postgres
+grants:
+  - "CREATE ROLE nfl_check_lineage LOGIN PASSWORD '<secret>';"
+  - "GRANT CONNECT ON DATABASE nfl TO nfl_check_lineage;"
+  - "GRANT USAGE ON SCHEMA observability TO nfl_check_lineage;"
+  - "ALTER ROLE nfl_check_lineage SET default_transaction_read_only = on;"
+  - "GRANT SELECT (stage, status, event_time, interval_start, interval_end) ON observability.pipeline_event TO nfl_check_lineage;"
+grants_rationale: >
+  The verdict is a GROUP BY stage, status over the rows whose interval_start and
+  interval_end equal the request, with MIN/MAX(event_time). message and metrics can
+  carry error text and row-level detail, and this check does not need them, so they are
+  not granted (the events endpoint, a separate identity, is the one that returns them).
+local_enforcement: >
+  ENFORCED by Postgres when the DSN in $SHIM_LINEAGE_PG_DSN logs in as nfl_check_lineage with
+  exactly the grants above: the role authenticates with its own password, can SELECT
+  only the listed columns, and cannot write. The shim refuses to start if that DSN
+  carries any other user, or a user another endpoint also carries. NOT verified by the
+  shim: that the database holds no EXTRA grant for this role; that is the DDL's job
+  (infra/sql) and is audited with \dp, not by this service.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ConnectAsLineageRole
+      Effect: Allow
+      Action:
+        - rds-db:connect
+      Resource:
+        - arn:aws:rds-db:${AWS_REGION}:${AWS_ACCOUNT_ID}:dbuser:${NFL_PG_RESOURCE_ID}/nfl_check_lineage
+    - Sid: ReadOwnSecret
+      Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:nfl/shim/lineage-*
+production_notes: >
+  If the event store moves to CloudWatch Logs Insights, swap the rds-db statement for
+  logs:StartQuery / logs:GetQueryResults scoped to the single log group.

@@ -1,0 +1,38 @@
+meta {
+  name: 07 Kafka Connect root
+  type: http
+  seq: 7
+  tags: [
+    local-only
+  ]
+}
+
+get {
+  url: {{connect_url}}/
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("worker reports its version and Kafka cluster", function () {
+    expect(res.getBody().version).to.be.a("string").and.not.equal("");
+    expect(res.getBody().kafka_cluster_id).to.be.a("string").and.not.equal("");
+  });
+}
+
+docs {
+  ## What this proves
+  The Kafka Connect worker that runs Debezium (the local stand-in for the DMS data plane) is up and joined to a Kafka cluster.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Connection refused: `nfl-kafka-connect` is down. Tagged `local-only`: production replication is AWS DMS, which has no Connect REST API.
+}

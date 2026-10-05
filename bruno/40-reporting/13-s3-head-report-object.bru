@@ -1,0 +1,48 @@
+meta {
+  name: 13 S3 HEAD report object
+  type: http
+  seq: 13
+}
+
+head {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{report_key}}
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+tests {
+  test("HTTP 200: the report object exists", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("its size equals the size the DAG published", function () {
+    expect(Number(res.getHeader("content-length"))).to.equal(bru.getVar("report_size_bytes"));
+  });
+  test("its sha256 object metadata equals the checksum the DAG published", function () {
+    expect(res.getHeader("x-amz-meta-sha256")).to.equal(bru.getVar("report_sha256"));
+  });
+}
+
+docs {
+  ## What this proves
+  The report file is in S3 at the key the DAG published, with the same size and the same sha256 in its object metadata.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `report_key` from `06`
+  - `report_sha256` from `08`
+  - `report_size_bytes` from `09`
+
+  ## When it fails
+  404: `build_report` did not upload. A metadata mismatch means the object was replaced after the run.
+}

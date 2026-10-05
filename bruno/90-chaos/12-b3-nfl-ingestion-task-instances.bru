@@ -1,0 +1,68 @@
+meta {
+  name: 12 B3 nfl_ingestion task instances
+  type: http
+  seq: 12
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{chaos_dag_run_id}}/taskInstances
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const tis = (res.getBody() && res.getBody().task_instances) || [];
+  const focus = tis.find(t => t.task_id === "is_failed_gate");
+  if (focus) {
+    bru.setVar("chaos_task_id", focus.task_id);
+    bru.setVar("chaos_try_number", focus.try_number);
+  }
+}
+
+tests {
+  test("HTTP 200 with task instances", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+  });
+  test("task is_failed_gate exists and was captured", function () {
+    const ids = res.getBody().task_instances.map(t => t.task_id);
+    expect(ids).to.include("is_failed_gate");
+    expect(bru.getVar("chaos_task_id")).to.equal("is_failed_gate");
+    expect(Number(bru.getVar("chaos_try_number"))).to.be.at.least(1);
+  });
+
+  test("the gate task is_failed_gate is the one that failed", function () {
+    const failed = res.getBody().task_instances.filter(t => t.state === "failed").map(t => t.task_id);
+    expect(failed).to.deep.equal(["is_failed_gate"]);
+  });
+  test("tasks downstream of the gate did not run", function () {
+    const blocked = res.getBody().task_instances.filter(t => t.state === "upstream_failed");
+    expect(blocked.length).to.be.at.least(1);
+  });
+}
+
+docs {
+  ## What this proves
+  Which tasks of the `nfl_ingestion` run executed and how each one ended. This is the per-step view of the stage:
+  the pre-checks and gates are separate task ids, so a red gate is visible by name.
+
+  ## Captures
+  - `chaos_task_id`
+  - `chaos_try_number`
+
+  ## Consumes
+  - `chaos_dag_run_id` from `Trigger nfl_ingestion`
+
+  ## When it fails
+  A task that is not `success` names the failing step. `up_for_retry` means a gate is still retrying.
+  Send the task log request that follows for the reason.
+}

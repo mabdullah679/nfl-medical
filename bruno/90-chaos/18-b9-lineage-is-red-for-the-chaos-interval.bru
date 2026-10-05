@@ -1,0 +1,52 @@
+meta {
+  name: 18 B9 Lineage is red for the chaos interval
+  type: http
+  seq: 18
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/lineage?interval_start={{interval_start_date_chaos}}&interval_end={{interval_end_date_chaos}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is fail", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(false);
+    expect(res.getBody().state).to.equal("fail");
+  });
+  test("ingestion is reported as a failed stage", function () {
+    expect(res.getBody().measured.stages_failed).to.include("ingestion");
+    expect(res.getBody().measured.stages.ingestion.latest_terminal_status).to.equal("failed");
+  });
+  test("the failed event is the one this run just wrote", function () {
+    const last = Date.parse(res.getBody().measured.stages.ingestion.latest_terminal_event);
+    expect(Date.now() - last).to.be.below((Number(bru.getEnvVar("poll_timeout_seconds")) + 120) * 1000);
+  });
+  test("no delivery happened for the bad interval", function () {
+    expect(res.getBody().measured.stages_with_events).to.not.include("delivery");
+  });
+}
+
+docs {
+  ## What this proves
+  The alert row exists in `observability.pipeline_event`: lineage for the chaos interval shows ingestion's latest terminal event is a fresh `failed`, and nothing was delivered for a bad interval.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date_chaos`, `interval_end_date_chaos` from `B6`, `B7`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

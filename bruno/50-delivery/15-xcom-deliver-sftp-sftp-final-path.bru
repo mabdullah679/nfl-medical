@@ -1,0 +1,51 @@
+meta {
+  name: 15 XCom deliver_sftp.sftp_final_path
+  type: http
+  seq: 15
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/deliver_sftp/xcomEntries/sftp_final_path?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("sftp_final_path", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key sftp_final_path", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("sftp_final_path");
+  });
+  test("value has the expected shape and was captured as sftp_final_path", function () {
+    expect(res.getBody().value).to.be.a("string").and.not.equal("");
+    expect(bru.getVar("sftp_final_path")).to.deep.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `deliver_sftp` published under `sftp_final_path`: the final path of the file on the SFTP server.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `sftp_final_path`
+
+  ## Consumes
+  - `delivery_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `sftp_final_path` (it failed or was skipped before that point). Used by: `19 Shim delivery SFTP after the forced delivery`.
+}

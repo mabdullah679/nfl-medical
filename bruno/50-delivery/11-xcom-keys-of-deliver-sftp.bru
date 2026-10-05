@@ -1,0 +1,53 @@
+meta {
+  name: 11 XCom keys of deliver_sftp
+  type: http
+  seq: 11
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/deliver_sftp/xcomEntries
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const entries = (res.getBody() && res.getBody().xcom_entries) || [];
+  const hit = entries.find(e => e.key === "delivery_action");
+  if (hit) {
+    bru.setVar("delivery_xcom_key", hit.key);
+  }
+}
+
+tests {
+  test("HTTP 200 with XCom entries", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+  });
+  test("deliver_sftp published every key this folder reads, and delivery_action was captured", function () {
+    expect(res.getBody().xcom_entries.map(e => e.key)).to.include.members(
+      ["delivery_action", "delivered", "sftp_final_path", "delivered_sha256", "delivered_size_bytes", "copies_on_sftp"]);
+    expect(bru.getVar("delivery_xcom_key")).to.equal("delivery_action");
+  });
+}
+
+docs {
+  ## What this proves
+  Task `deliver_sftp` of the forced run published its outputs as XComs. The list carries keys only; values are fetched one key at a time by the requests that follow.
+
+  ## Captures
+  - `delivery_xcom_key`
+
+  ## Consumes
+  - `delivery_dag_run_id`
+
+  ## When it fails
+  An empty list means `deliver_sftp` did not finish. Check `09 deliver_sftp task instance`.
+}

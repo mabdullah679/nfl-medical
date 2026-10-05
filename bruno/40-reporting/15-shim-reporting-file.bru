@@ -1,0 +1,53 @@
+meta {
+  name: 15 Shim reporting file
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{shim_url}}/checks/reporting/file?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}&report={{report_name}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("the check ran for the captured interval", function () {
+    expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+    expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+  });
+
+       test("the shim checked the key the DAG published", function () {
+         expect(res.getBody().measured.key_checked).to.equal(bru.getVar("report_key"));
+       });
+       test("the checksum the shim computed from the bytes equals the checksum the DAG published", function () {
+         expect(res.getBody().measured.computed_sha256).to.equal(bru.getVar("report_sha256"));
+         expect(res.getBody().measured.expected_sha256).to.equal(bru.getVar("report_sha256"));
+         expect(res.getBody().measured.size_bytes).to.equal(bru.getVar("report_size_bytes"));
+       });
+}
+
+docs {
+  ## What this proves
+  The report bytes in S3 hash to the checksum the DAG published. Non-HTTP made sendable: the shim downloads
+  the object and computes sha256 itself, so this is independent of the metadata the DAG wrote.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from the two `XCom validate_conf.interval_*_date` requests in this folder
+  - `report_name` from `07`, `report_key` from `06`, `report_sha256` from `08`, `report_size_bytes` from `09`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

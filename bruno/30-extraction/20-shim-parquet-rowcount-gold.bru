@@ -1,0 +1,52 @@
+meta {
+  name: 20 Shim parquet rowcount gold
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{shim_url}}/checks/extraction/parquet-rowcount?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}&layer=gold
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("the check ran for the captured interval", function () {
+    expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+    expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+  });
+
+           test("rows counted from the Parquet footers equal the manifest", function () {
+             expect(res.getBody().measured.actual_rows).to.equal(res.getBody().measured.manifest_declared_rows);
+             expect(res.getBody().measured.difference).to.equal(0);
+           });
+           test("and equal the count the DAG published", function () {
+             expect(res.getBody().measured.actual_rows).to.equal(bru.getVar("gold_row_count"));
+           });
+}
+
+docs {
+  ## What this proves
+  The Gold Parquet files really contain the declared number of rows. Non-HTTP made sendable: the shim
+  downloads each file and reads the Parquet footer with pyarrow, then compares with the manifest.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from the two `XCom validate_conf.interval_*_date` requests in this folder
+  - `gold_row_count` from `XCom publish.gold_row_count`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

@@ -1,0 +1,62 @@
+meta {
+  name: 09 XCom load_staging_to_utm.load_by_table
+  type: http
+  seq: 9
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{ingestion_dag_run_id}}/taskInstances/load_staging_to_utm/xcomEntries/{{ingestion_xcom_key}}?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("ingestion_load_by_table", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key load_by_table", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("load_by_table");
+  });
+  test("value has the expected shape and was captured as ingestion_load_by_table", function () {
+    expect(res.getBody().value).to.not.equal(undefined);
+    expect(bru.getVar("ingestion_load_by_table")).to.deep.equal(res.getBody().value);
+  });
+
+     test("all three tables were loaded with nothing rejected", function () {
+       const v = res.getBody().value;
+       expect(Object.keys(v)).to.have.members(["account_transaction", "patient_account", "payment"]);
+       for (const t of Object.keys(v)) {
+         expect(v[t].rows_loaded, t).to.be.above(0);
+         expect(v[t].rows_rejected, t).to.equal(0);
+         expect(v[t].rows_read, t).to.equal(v[t].rows_loaded);
+       }
+     });
+}
+
+docs {
+  ## What this proves
+  The value task `load_staging_to_utm` published under `load_by_table`: rows read, loaded and rejected per table.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `ingestion_load_by_table`
+
+  ## Consumes
+  - `ingestion_dag_run_id`
+  - `ingestion_xcom_key` from the XCom keys request before this one
+
+  ## When it fails
+  404: the task did not publish `load_by_table` (it failed or was skipped before that point).
+}

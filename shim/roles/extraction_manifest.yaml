@@ -1,0 +1,60 @@
+endpoint: /checks/extraction/manifest
+check: extraction.manifest
+summary: Fetch manifest.json for the interval and validate its structure and claims.
+identity:
+  kind: aws_access_key
+  name: nfl_check_extraction_manifest
+  scope: >
+    PRODUCTION TARGET, not a local fact: locally floci accepts any key for any action,
+    so nothing below is enforced and a pass proves reachability only, no IAM identity.
+    floci/S3 at http://host.docker.internal:4566 (host: localhost:4566). GetObject restricted to the manifest.json key
+    pattern. Cannot read Parquet objects; cannot list the bucket.
+credential_env: SHIM_EXTRACTION_MANIFEST_AWS_SECRET_ACCESS_KEY
+credential_env_companions:
+  - SHIM_EXTRACTION_MANIFEST_AWS_ACCESS_KEY_ID
+dependencies:
+  - s3
+grants:
+  - "s3:GetObject on arn:aws:s3:::${NFL_S3_BUCKET}/df_*/manifest.json"
+grants_rationale: >
+  Reading the manifest body is unavoidable for this check, so GetObject is granted —
+  but only on the single filename pattern. Parquet bodies remain denied, which is the
+  reason this is a different identity from parquet-rowcount.
+local_enforcement: >
+  NOT enforced locally, and no S3 identity is proven locally. floci accepts any access
+  key for every S3 action and evaluates no IAM policy, so a passing call proves only
+  that the endpoint is REACHABLE and the object is there; it proves nothing about who
+  is allowed to read it. All five S3-using checks carry the same floci key (declared
+  under shared_with). The grants and aws_iam_policy are the production target; what
+  holds locally is only that this code path issues no other S3 call.
+shared_with:
+  - extraction_s3_marker
+  - extraction_parquet_rowcount
+  - reporting_file
+  - delivery_sftp
+shared_rationale: >
+  Locally every S3 check authenticates to floci with the same access key. floci accepts
+  any key and evaluates no IAM policy, so issuing five different keys would look like
+  separation while enforcing none. Production gives each check its own task role with
+  the aws_iam_policy below, and this block is then removed.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ReadManifestOnly
+      Effect: Allow
+      Action:
+        - s3:GetObject
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}/df_*/manifest.json
+    - Sid: DenyEverythingElseInBucket
+      Effect: Deny
+      Action:
+        - s3:GetObject
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}/*
+      Condition:
+        StringNotLike:
+          s3:prefix: "*/manifest.json"
+production_notes: >
+  Unchanged in production. The manifest is metadata, not patient data, so this is the
+  only S3 read identity that is safe to expose to a broad on-call audience.

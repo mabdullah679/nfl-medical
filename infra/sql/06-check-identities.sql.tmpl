@@ -1,0 +1,106 @@
+-- Read-only check identities, the stub reader and the event writer.
+--
+-- Role                 | reads / writes                                              | used by
+-- ---------------------+-------------------------------------------------------------+------------------------------
+-- nfl_stub_reader      | SELECT on the 3 replicated staging tables                   | DMS control-plane stub
+-- nfl_events           | INSERT on observability.pipeline_event (cannot read it)     | DAG tasks emitting events
+-- nfl_check_reconcile  | key/time columns of staging + utm tables                    | /checks/ingestion/reconcile
+-- nfl_check_quality    | key/time columns, batch row, reject keys (not raw_row)      | /checks/ingestion/quality
+-- nfl_check_freshness  | load timestamps + heartbeat                                 | /checks/ingestion/freshness
+-- nfl_check_lineage    | 5 columns of observability.pipeline_event                   | /checks/lineage
+-- nfl_check_events     | observability.pipeline_event (whole rows)                   | /checks/events
+--
+-- The grant list of each nfl_check_* role is the `grants` list of the matching
+-- shim/roles/*.yaml; the two must be changed together.
+--
+-- Rendered and applied by scripts/up.sh on every start (idempotent). The
+-- CHANGEME_* placeholders are replaced from infra/nfl.env in memory and piped
+-- to psql on stdin; no rendered file is written anywhere. ALTER ROLE ...
+-- PASSWORD runs every time so the stored password always matches the env file.
+-- The REVOKEs make an older, wider volume converge to exactly this file.
+
+DO $$
+DECLARE r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['nfl_stub_reader', 'nfl_events', 'nfl_check_reconcile',
+                           'nfl_check_quality', 'nfl_check_freshness',
+                           'nfl_check_lineage', 'nfl_check_events'] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      EXECUTE format('CREATE ROLE %I LOGIN', r);
+    END IF;
+    EXECUTE format('GRANT CONNECT ON DATABASE nfl TO %I', r);
+    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA staging, utm, observability FROM %I', r);
+    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA staging, utm, observability FROM %I', r);
+    EXECUTE format('REVOKE ALL ON SCHEMA staging, utm, observability FROM %I', r);
+    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA staging REVOKE ALL ON TABLES FROM %I', r);
+  END LOOP;
+
+  -- The shared read role that every Postgres check used to log in as.
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nfl_check') THEN
+    DROP OWNED BY nfl_check;
+    DROP ROLE nfl_check;
+  END IF;
+END $$;
+
+ALTER ROLE nfl_stub_reader     PASSWORD 'CHANGEME_pg_stub';
+ALTER ROLE nfl_events          PASSWORD 'CHANGEME_pg_events';
+ALTER ROLE nfl_check_reconcile PASSWORD 'CHANGEME_pg_check_reconcile';
+ALTER ROLE nfl_check_quality   PASSWORD 'CHANGEME_pg_check_quality';
+ALTER ROLE nfl_check_freshness PASSWORD 'CHANGEME_pg_check_freshness';
+ALTER ROLE nfl_check_lineage   PASSWORD 'CHANGEME_pg_check_lineage';
+ALTER ROLE nfl_check_events    PASSWORD 'CHANGEME_pg_check_events';
+
+ALTER ROLE nfl_stub_reader     SET default_transaction_read_only = on;
+ALTER ROLE nfl_check_reconcile SET default_transaction_read_only = on;
+ALTER ROLE nfl_check_quality   SET default_transaction_read_only = on;
+ALTER ROLE nfl_check_freshness SET default_transaction_read_only = on;
+ALTER ROLE nfl_check_lineage   SET default_transaction_read_only = on;
+ALTER ROLE nfl_check_events    SET default_transaction_read_only = on;
+
+-- DMS stub: counts landed rows of the replicated tables. Not the heartbeat.
+GRANT USAGE ON SCHEMA staging TO nfl_stub_reader;
+GRANT SELECT ON staging.patient_account, staging.account_transaction, staging.payment
+  TO nfl_stub_reader;
+
+-- Event writer: append-only. It cannot read back what it or anyone else wrote.
+GRANT USAGE ON SCHEMA observability TO nfl_events;
+GRANT INSERT ON observability.pipeline_event TO nfl_events;
+GRANT USAGE ON SEQUENCE observability.pipeline_event_event_id_seq TO nfl_events;
+
+-- /checks/ingestion/reconcile
+GRANT USAGE ON SCHEMA staging, utm TO nfl_check_reconcile;
+GRANT SELECT (account_id, opened_at, dms_loaded_at, updated_at) ON staging.patient_account TO nfl_check_reconcile;
+GRANT SELECT (transaction_id, posted_at, dms_loaded_at, updated_at) ON staging.account_transaction TO nfl_check_reconcile;
+GRANT SELECT (payment_id, received_at, dms_loaded_at, updated_at) ON staging.payment TO nfl_check_reconcile;
+GRANT SELECT (opened_at) ON utm.dim_patient_account TO nfl_check_reconcile;
+GRANT SELECT (posted_at) ON utm.fact_account_transaction TO nfl_check_reconcile;
+GRANT SELECT (received_at) ON utm.fact_payment TO nfl_check_reconcile;
+
+-- /checks/ingestion/quality
+GRANT USAGE ON SCHEMA staging, utm TO nfl_check_quality;
+GRANT SELECT (account_number, opened_at) ON utm.dim_patient_account TO nfl_check_quality;
+GRANT SELECT (transaction_ref, posted_at) ON utm.fact_account_transaction TO nfl_check_quality;
+GRANT SELECT (payment_ref, received_at) ON utm.fact_payment TO nfl_check_quality;
+GRANT SELECT (account_id, account_number, opened_at, dms_loaded_at, updated_at) ON staging.patient_account TO nfl_check_quality;
+GRANT SELECT (transaction_id, transaction_ref, posted_at, dms_loaded_at, updated_at) ON staging.account_transaction TO nfl_check_quality;
+GRANT SELECT (payment_id, payment_ref, received_at, dms_loaded_at, updated_at) ON staging.payment TO nfl_check_quality;
+GRANT SELECT (batch_id, batch_key, window_start, window_end, status, rows_read, rows_loaded, rows_rejected, failure_reason, started_at, finished_at) ON utm.ingestion_batch TO nfl_check_quality;
+GRANT SELECT (reject_id, utm_batch_id, source_table, reject_reason, business_key) ON utm.ingestion_reject TO nfl_check_quality;
+
+-- /checks/ingestion/freshness
+GRANT USAGE ON SCHEMA staging, utm TO nfl_check_freshness;
+GRANT SELECT (dms_loaded_at) ON staging.patient_account TO nfl_check_freshness;
+GRANT SELECT (dms_loaded_at) ON staging.account_transaction TO nfl_check_freshness;
+GRANT SELECT (dms_loaded_at) ON staging.payment TO nfl_check_freshness;
+GRANT SELECT (utm_loaded_at) ON utm.dim_patient_account TO nfl_check_freshness;
+GRANT SELECT (utm_loaded_at) ON utm.fact_account_transaction TO nfl_check_freshness;
+GRANT SELECT (utm_loaded_at) ON utm.fact_payment TO nfl_check_freshness;
+GRANT SELECT (source_name, beat_at) ON staging.replication_heartbeat TO nfl_check_freshness;
+
+-- /checks/lineage
+GRANT USAGE ON SCHEMA observability TO nfl_check_lineage;
+GRANT SELECT (stage, status, event_time, interval_start, interval_end) ON observability.pipeline_event TO nfl_check_lineage;
+
+-- /checks/events
+GRANT USAGE ON SCHEMA observability TO nfl_check_events;
+GRANT SELECT ON observability.pipeline_event TO nfl_check_events;

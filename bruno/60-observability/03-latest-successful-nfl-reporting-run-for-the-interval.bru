@@ -1,0 +1,58 @@
+meta {
+  name: 03 Latest successful nfl_reporting run for the interval
+  type: http
+  seq: 3
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns?state=success&order_by=-execution_date&limit=50
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const runs = (res.getBody() && res.getBody().dag_runs) || [];
+  const want = [bru.getEnvVar("interval_start_ts"), bru.getEnvVar("interval_end_ts")];
+  const hit = runs.find(r => r.conf && r.conf.interval_start === want[0] && r.conf.interval_end === want[1]);
+  if (hit) {
+    bru.setVar("obs_dag_run_id", encodeURIComponent(hit.dag_run_id));
+    bru.setVar("obs_dag_run_id_raw", hit.dag_run_id);
+  } else {
+    bru.setVar("obs_dag_run_id", "");
+    bru.setVar("obs_dag_run_id_raw", "");
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("a successful nfl_reporting run exists for the environment's interval and was captured", function () {
+    expect(bru.getVar("obs_dag_run_id"), "no successful run for this interval: run the earlier stage folder first").to.be.a("string").and.not.equal("");
+  });
+}
+
+docs {
+  ## What this proves
+  Finds the newest successful `nfl_reporting` run whose conf matches `interval_start_ts` / `interval_end_ts`,
+  so this folder can be run on its own without triggering anything. Its `validate_conf` XComs give the
+  interval in the date form the lineage and events checks take.
+
+  ## Captures
+  - obs_dag_run_id (URL-encoded)
+  - `obs_dag_run_id_raw`
+
+  ## Consumes
+  - `interval_start_ts`, `interval_end_ts` (environment)
+
+  ## When it fails
+  No matching run: the stage has not succeeded for this interval yet. Run the stage's own folder first.
+}

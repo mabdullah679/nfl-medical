@@ -1,0 +1,89 @@
+meta {
+  name: 02 DMS DescribeTableStatistics
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.DescribeTableStatistics
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {
+    "ReplicationTaskArn": "{{dms_task_arn}}"
+  }
+}
+
+script:post-response {
+  const stats = (res.getBody() && res.getBody().TableStatistics) || [];
+  bru.setVar("dms_tables_landed", stats.map(t => t.TableName).sort().join(","));
+}
+
+tests {
+      test("HTTP 200 for the captured task ARN", function () {
+        expect(res.getStatus()).to.equal(200);
+        expect(res.getBody().ReplicationTaskArn).to.equal(bru.getVar("dms_task_arn"));
+      });
+      test("the three Hawks tables are replicated", function () {
+        const names = res.getBody().TableStatistics.map(t => t.TableName);
+        expect(names).to.include.members(["account_transaction", "patient_account", "payment"]);
+      });
+      test("each of the three Hawks tables has rows landed in staging", function () {
+        const byName = {};
+        for (const t of res.getBody().TableStatistics) { byName[t.TableName] = t.FullLoadRows; }
+        for (const name of ["account_transaction", "patient_account", "payment"]) {
+          expect(byName[name], name).to.be.a("number").and.above(0);
+        }
+      });
+      test("no table reports a row count of zero, and a count the stub could not read is null and tagged unknown", function () {
+        const zero = res.getBody().TableStatistics.filter(t => t.FullLoadRows === 0).map(t => t.TableName);
+        expect(zero, "zero rows: " + zero.join(", ")).to.have.lengthOf(0);
+        if (String(bru.getEnvVar("dms_is_stub")) !== "true") { return; }
+        const unlabelled = res.getBody().TableStatistics
+          .filter(t => t.FullLoadRows === null && t._provenance.FullLoadRows !== "unknown").map(t => t.TableName);
+        expect(unlabelled, unlabelled.join(", ")).to.have.lengthOf(0);
+      });
+
+  test("the response is labelled synthetic exactly when the environment says this endpoint is the stub", function () {
+    const isStub = String(bru.getEnvVar("dms_is_stub")) === "true";
+    expect(res.getHeader("x-nfl-stub") === "true").to.equal(isStub);
+  });
+}
+
+docs {
+  ## What this proves
+  Rows have landed in staging for each replicated table. This is the chained request: its body is built from
+  the ARN the previous response returned. On the stub `FullLoadRows` is a live `count(*)` of each staging
+  table the stub's Postgres role may read: the three Hawks tables. Debezium also captures
+  `replication_heartbeat`; it is not a business table and the stub role has no grant on it, so the stub
+  leaves it out of the table statistics. Its landing is proven by `20-ingestion/14 Shim ingestion freshness`,
+  not here.
+
+  ## Captures
+  - `dms_tables_landed`
+
+  ## Consumes
+  - `dms_task_arn` from `01 DMS DescribeReplicationTasks`
+
+  ## When it fails
+  400 with no `X-Amz-Target`: the header was edited away. 404 `UnknownOperationException`: the operation name is
+  wrong. On the local stub read `_provenance` beside each field: `measured` was read from a live system,
+  `derived` was computed from a measured value by the rule in `_provenance_detail`, `unknown` is null on
+  purpose. On real AWS a 400 `AccessDeniedException` names the missing `dms:` permission.
+}

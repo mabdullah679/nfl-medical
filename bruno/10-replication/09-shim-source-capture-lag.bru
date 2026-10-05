@@ -1,0 +1,55 @@
+meta {
+  name: 09 Shim source capture lag
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{shim_url}}/checks/replication/lag
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("measured lag is within the threshold", function () {
+    expect(res.getBody().measured.lag_seconds).to.be.at.most(res.getBody().threshold.lag_seconds_max);
+  });
+  test("the check states its own scope: source capture only, not end-to-end", function () {
+    expect(res.getBody().check).to.equal("replication.source_capture_lag");
+    expect(res.getBody().measured.end_to_end).to.equal(false);
+    expect(res.getBody().measured.connector).to.equal(bru.getEnvVar("source_connector_name"));
+  });
+  test("the verdict rests on binlog positions from both sides", function () {
+    expect(res.getBody().measured.source_binlog_file).to.be.a("string");
+    expect(res.getBody().measured.consumed_binlog_file).to.be.a("string");
+  });
+}
+
+docs {
+  ## What this proves
+  SOURCE CAPTURE lag is inside its threshold: how far the Debezium source connector's committed offset is
+  behind the MySQL binlog. This is the MySQL to Kafka hop only. It does NOT show that rows reach staging: a
+  dead JDBC sink leaves it green (`90-chaos` scenario G proves exactly that). The sink's state is in
+  `10 Shim connector status`; end-to-end staleness is `20-ingestion/14 Shim ingestion freshness`. Non-HTTP
+  made sendable: the shim runs `SHOW MASTER STATUS` on MySQL with a REPLICATION CLIENT-only user and compares
+  it to the connector's committed offset.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

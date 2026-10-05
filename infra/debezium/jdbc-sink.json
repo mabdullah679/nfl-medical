@@ -1,0 +1,31 @@
+{
+  "name": "nfl-staging-jdbc-sink",
+  "config": {
+    "connector.class": "io.debezium.connector.jdbc.JdbcSinkConnector",
+    "tasks.max": "1",
+
+    "topics": "staging.patient_account,staging.account_transaction,staging.payment,staging.replication_heartbeat",
+
+    "connection.url": "jdbc:postgresql://nfl-postgres:5432/nfl?currentSchema=staging",
+    "connection.username": "nfl_replication",
+    "connection.password": "${file:/kafka/external-secrets/connect-secrets.properties:pg_repl_password}",
+
+    "insert.mode": "insert",
+    "delete.enabled": "false",
+    "primary.key.mode": "none",
+    "schema.evolution": "none",
+
+    "table.name.format": "${topic}",
+    "quote.identifiers": "false",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "true",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "true",
+
+    "transforms": "stripSchemaPrefix",
+    "transforms.stripSchemaPrefix.type": "org.apache.kafka.connect.transforms.RegexRouter",
+    "transforms.stripSchemaPrefix.regex": "staging\\.(.*)",
+    "transforms.stripSchemaPrefix.replacement": "$1"
+  }
+}

@@ -1,0 +1,39 @@
+meta {
+  name: 03 Floci health
+  type: http
+  seq: 3
+  tags: [
+    local-only
+  ]
+}
+
+get {
+  url: {{floci_health_url}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the emulated services this stack uses are running", function () {
+    expect(res.getBody().services.s3).to.equal("running");
+  });
+}
+
+docs {
+  ## What this proves
+  The local AWS emulator (floci) is answering and its S3 service is running.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Connection refused: floci is not running on this machine. It is shared with other projects; start it the
+  way that project documents, do not restart it from here. Tagged `local-only`: there is no such endpoint on
+  real AWS.
+}

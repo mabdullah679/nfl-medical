@@ -1,0 +1,69 @@
+meta {
+  name: 11 Shim events for the clean interval
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{shim_url}}/checks/events?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}&limit=200
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const c = (res.getBody() && res.getBody().measured && res.getBody().measured.counts) || {};
+  bru.setVar("clean_interval_event_count", c.matched);
+  bru.setVar("clean_interval_alert_count", c.alerts);
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+      test("the check ran for the captured interval", function () {
+        expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+        expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+      });
+
+      test("events are recorded for exactly this interval, for all five stages", function () {
+        expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+        expect(Object.keys(res.getBody().measured.counts.by_stage)).to.include.members(["replication", "ingestion", "extraction", "reporting", "delivery"]);
+      });
+      test("the resolved reporting run wrote its reporting and delivery events, and none of them is an alert", function () {
+        const mine = res.getBody().measured.events.filter(e => e.run_id === bru.getVar("obs_dag_run_id_raw"));
+        expect(mine.map(e => e.stage)).to.include.members(["reporting", "delivery"]);
+        expect(mine.filter(e => e.alert || e.status !== "success").map(e => e.stage + "/" + e.step + "=" + e.status)).to.have.lengthOf(0);
+      });
+      test("every event row carries its stage, step, status, run and time", function () {
+        for (const e of res.getBody().measured.events) {
+          expect(e.stage, JSON.stringify(e)).to.be.a("string").and.not.equal("");
+          expect(e.status).to.be.oneOf(["success", "failed", "retry", "running"]);
+          expect(e.run_id).to.be.a("string").and.not.equal("");
+          expect(Date.parse(e.event_time)).to.be.above(0);
+        }
+      });
+}
+
+docs {
+  ## What this proves
+  The raw event rows of `observability.pipeline_event` for exactly the clean interval, newest first: stage,
+  step, status, run, message, metrics, and for alerts `alert`, `severity` and `error_summary`. This is the
+  table Operations alerts are read from. On this endpoint `ok` means only "at least one event matched"; the
+  pipeline verdict is `08 Shim lineage`. Non-HTTP made sendable: SQL run by the read-only `nfl_check_events`
+  role.
+
+  ## Captures
+  - `clean_interval_event_count`
+  - `clean_interval_alert_count`
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from `06`, `07`
+  - `obs_dag_run_id_raw` from `03`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

@@ -1,0 +1,68 @@
+meta {
+  name: 16 S3 GET manifest
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{s3_manifest_key}}
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    const m = typeof res.getBody() === "string" ? JSON.parse(res.getBody()) : res.getBody();
+    bru.setVar("manifest", m);
+  }
+}
+
+tests {
+  test("HTTP 200 and the body is JSON", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("manifest")).to.be.an("object");
+  });
+  test("manifest interval matches the interval the run was triggered for", function () {
+    expect(bru.getVar("manifest").interval.start).to.equal(String(bru.getVar("interval_start_date")));
+    expect(bru.getVar("manifest").interval.end).to.equal(String(bru.getVar("interval_end_date")));
+  });
+  test("manifest row counts equal the counts the DAG published", function () {
+    expect(bru.getVar("manifest").layers.silver.row_count).to.equal(bru.getVar("silver_row_count"));
+    expect(bru.getVar("manifest").layers.gold.row_count).to.equal(bru.getVar("gold_row_count"));
+  });
+  test("every listed file carries a sha256 checksum and exists in the bucket listing", function () {
+    const m = bru.getVar("manifest");
+    const files = m.layers.silver.files.concat(m.layers.gold.files);
+    expect(files.length).to.be.at.least(2);
+    for (const f of files) {
+      expect(f.checksum, f.path).to.match(/^[0-9a-f]{64}$/);
+      expect(bru.getVar("s3_keys"), f.path).to.include(bru.getVar("interval_prefix") + "/" + f.path);
+    }
+  });
+}
+
+docs {
+  ## What this proves
+  The manifest itself, fetched raw from S3: its interval, per-layer row counts and per-file checksums, cross-checked against the DAG's XComs and the bucket listing.
+
+  ## Captures
+  - `manifest`
+
+  ## Consumes
+  - `s3_manifest_key` from `07`
+  - `silver_row_count` from `09`, `gold_row_count` from `10`
+  - `interval_start_date`, `interval_end_date` from `11`, `12`
+  - `s3_keys`, `interval_prefix` from `13`, `08`
+
+  ## When it fails
+  A count mismatch means the manifest in S3 is not from the run that was just triggered.
+}

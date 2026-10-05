@@ -1,0 +1,56 @@
+meta {
+  name: 04 A4 Connector status check goes red
+  type: http
+  seq: 4
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/replication/connector-status
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForConnector(bru, bru.getVar("chaos_connector_name"), "PAUSED");
+  bru.setVar("chaos_connector_state_seen", result.state);
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is fail", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(false);
+    expect(res.getBody().state).to.equal("fail");
+  });
+  test("the check names the cause: the source connector is PAUSED with no running task", function () {
+    const m = res.getBody().measured;
+    expect(m.connector_state).to.equal("PAUSED");
+    expect(m.connectors.source.connector_state).to.equal("PAUSED");
+    expect(m.connectors.source.tasks_running).to.equal(0);
+    expect(m.connectors.source.ok).to.equal(false);
+    expect(JSON.stringify(m.connectors_unhealthy)).to.include(bru.getVar("chaos_connector_name"));
+  });
+  test("the sink is untouched and still reported healthy, so the red verdict is the source's", function () {
+    expect(res.getBody().measured.connectors.sink.ok).to.equal(true);
+  });
+}
+
+docs {
+  ## What this proves
+  The connector-status check detects a stopped connector: HTTP 200 (it ran), `ok: false`, cause in `measured`. The pre-request script waits until Kafka Connect reports PAUSED.
+
+  ## Captures
+  - `chaos_connector_state_seen`
+
+  ## Consumes
+  - `chaos_connector_name` from `A1`
+
+  ## When it fails
+  Still green: the pause did not take effect; GET the connector status in `10-replication/06`.
+}

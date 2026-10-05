@@ -1,0 +1,62 @@
+meta {
+  name: 08 nfl_reporting run state (waits until terminal)
+  type: http
+  seq: 8
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForDagRun(bru, "nfl_reporting", bru.getVar("delivery_dag_run_id"));
+  bru.setVar("delivery_poll_count", result.polls);
+  bru.setVar("delivery_poll_waited_ms", result.waitedMs);
+}
+
+script:post-response {
+  bru.setVar("delivery_run_state", res.getBody().state);
+}
+
+tests {
+  test("HTTP 200 for the run this folder triggered", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().dag_run_id).to.equal(bru.getVar("delivery_dag_run_id"));
+  });
+  test("the run reached a terminal state inside poll_timeout_seconds", function () {
+    expect(["success", "failed"], "still " + res.getBody().state + " after " + bru.getVar("delivery_poll_waited_ms") + " ms").to.include(res.getBody().state);
+  });
+  test("the run ended in success", function () {
+    expect(res.getBody().state).to.equal("success");
+  });
+}
+
+docs {
+  ## What this proves
+  The forced-redelivery run finished in state `success`. The pre-request script polls the same Airflow
+  endpoint every `poll_interval_ms` until the run is `success` or `failed`, or until `poll_timeout_seconds`
+  passes, and only then sends this request. A run still going at the timeout FAILS the test.
+
+  ## Captures
+  - `delivery_run_state`
+  - `delivery_poll_count`
+  - `delivery_poll_waited_ms`
+
+  ## Consumes
+  - `delivery_dag_run_id` from the trigger request before this one
+  - `poll_timeout_seconds`, `poll_interval_ms` (environment)
+
+  ## When it fails
+  State is not `success`: send `09 deliver_sftp task instance` and `10 deliver_sftp task log` for the reason.
+}

@@ -1,0 +1,52 @@
+meta {
+  name: 05 Kafka Connect list connectors
+  type: http
+  seq: 5
+  tags: [
+    local-only
+  ]
+}
+
+get {
+  url: {{connect_url}}/connectors
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const names = Array.isArray(res.getBody()) ? res.getBody() : [];
+  if (names.includes(bru.getEnvVar("source_connector_name"))) {
+    bru.setVar("connector_name", bru.getEnvVar("source_connector_name"));
+  }
+  if (names.includes(bru.getEnvVar("sink_connector_name"))) {
+    bru.setVar("sink_connector_name_live", bru.getEnvVar("sink_connector_name"));
+  }
+}
+
+tests {
+  test("HTTP 200 with a list", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody()).to.be.an("array");
+  });
+  test("the Debezium source and the staging sink are both registered and captured", function () {
+    expect(res.getBody()).to.include(bru.getEnvVar("source_connector_name"));
+    expect(res.getBody()).to.include(bru.getEnvVar("sink_connector_name"));
+    expect(bru.getVar("connector_name")).to.equal(bru.getEnvVar("source_connector_name"));
+    expect(bru.getVar("sink_connector_name_live")).to.equal(bru.getEnvVar("sink_connector_name"));
+  });
+}
+
+docs {
+  ## What this proves
+  Both halves of local replication are registered: the Debezium MySQL source and the JDBC sink into staging.
+
+  ## Captures
+  - `connector_name`
+  - `sink_connector_name_live`
+
+  ## Consumes
+  - `connect_url`, `source_connector_name`, `sink_connector_name` (environment)
+
+  ## When it fails
+  An empty list means connectors were never registered: `scripts/up.sh` registers them.
+}

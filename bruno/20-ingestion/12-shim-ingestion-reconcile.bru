@@ -1,0 +1,71 @@
+meta {
+  name: 12 Shim ingestion reconcile
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{shim_url}}/checks/ingestion/reconcile?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("the check ran for the captured interval", function () {
+    expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+    expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+  });
+
+  test("all three table pairs were compared and none failed", function () {
+    const m = res.getBody().measured;
+    expect(m.table_pairs_checked).to.have.members(["patient_account", "account_transaction", "payment"]);
+    expect(m.table_pairs_failed, JSON.stringify(m.table_pairs_failed)).to.have.lengthOf(0);
+    expect(m.table_pairs_empty, JSON.stringify(m.table_pairs_empty)).to.have.lengthOf(0);
+  });
+  test("per table, staging and utm hold the same number of rows, and not zero", function () {
+    const t = res.getBody().measured.tables;
+    for (const name of Object.keys(t)) {
+      expect(t[name].staging_rows, name).to.be.above(0);
+      expect(t[name].utm_rows, name).to.equal(t[name].staging_rows);
+    }
+  });
+  test("per table, utm agrees with what the DAG said it loaded", function () {
+    const loaded = bru.getVar("ingestion_load_by_table");
+    const t = res.getBody().measured.tables;
+    let total = 0;
+    for (const name of ["patient_account", "account_transaction", "payment"]) {
+      expect(t[name].utm_rows, name).to.equal(loaded[name].rows_loaded);
+      total += loaded[name].rows_loaded;
+    }
+    expect(res.getBody().measured.utm_rows).to.equal(total);
+  });
+}
+
+docs {
+  ## What this proves
+  Every source row in staging for the interval is in utm, for all three table pairs (`patient_account`,
+  `account_transaction`, `payment`): the newest CDC version of each source key in staging equals the rows in
+  the utm table, per pair (`measured.tables`) and in total. Non-HTTP made sendable: SQL counts run by the
+  read-only, column-scoped `nfl_check_reconcile` role. Each pair is also cross-checked against the DAG's own
+  XCom count.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from the two `XCom validate_conf.interval_*_date` requests in this folder
+  - `ingestion_load_by_table` from `09 XCom load_staging_to_utm.load_by_table`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

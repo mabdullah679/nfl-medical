@@ -1,0 +1,55 @@
+meta {
+  name: 10 XCom publish.gold_row_count
+  type: http
+  seq: 10
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns/{{extraction_dag_run_id}}/taskInstances/publish/xcomEntries/gold_row_count?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("gold_row_count", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key gold_row_count", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("gold_row_count");
+  });
+  test("value has the expected shape and was captured as gold_row_count", function () {
+    expect(res.getBody().value).to.be.a("number");
+    expect(bru.getVar("gold_row_count")).to.deep.equal(res.getBody().value);
+  });
+
+     test("gold has rows", function () {
+       expect(res.getBody().value).to.be.above(0);
+     });
+}
+
+docs {
+  ## What this proves
+  The value task `publish` published under `gold_row_count`: rows the job says it wrote to the Gold layer.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `gold_row_count`
+
+  ## Consumes
+  - `extraction_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `gold_row_count` (it failed or was skipped before that point). Used by: `16 S3 GET manifest`, `20 Shim parquet rowcount gold`.
+}

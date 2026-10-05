@@ -1,0 +1,53 @@
+meta {
+  name: 04 nfl_reporting task log
+  type: http
+  seq: 4
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{reporting_dag_run_id}}/taskInstances/{{reporting_task_id}}/logs/{{reporting_try_number}}
+  body: none
+  auth: basic
+}
+
+headers {
+  Accept: text/plain
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 200 with log text", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(String(res.getBody()).length).to.be.above(0);
+  });
+
+    test("the log is the log of the build_report task", function () {
+      expect(String(res.getBody())).to.include("task_id=build_report");
+    });
+    test("build_report finished without a traceback", function () {
+      expect(String(res.getBody())).to.not.include("Traceback (most recent call last)");
+    });
+}
+
+docs {
+  ## What this proves
+  The raw log of the report build step.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `reporting_dag_run_id` from `Trigger nfl_reporting`
+  - `reporting_task_id`, `reporting_try_number` from `nfl_reporting task instances`
+
+  ## When it fails
+  404: the try number does not exist (the task never started). An empty log usually means the task is
+  still queued. The traceback, if any, is in this response body.
+}

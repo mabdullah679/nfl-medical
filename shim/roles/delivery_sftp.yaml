@@ -1,0 +1,96 @@
+endpoint: /checks/delivery/sftp
+check: delivery.sftp
+summary: Confirm the report landed on SFTP under its final name with matching size and checksum.
+identity:
+  kind: ssh_keypair
+  name: nfl_check_delivery_sftp
+  scope: >
+    SFTP server at nfl-sftp:22 (host: localhost:2225). Read-only, chrooted to its own home, which contains the recipient directory /outbound as a read-only mount. The
+    key is a distinct keypair from the one the delivery stage uses to UPLOAD, so a
+    compromised checker cannot write, overwrite, or delete a delivered file.
+credential_env: SHIM_DELIVERY_SFTP_PRIVATE_KEY_PATH
+credential_env_companions:
+  - SHIM_DELIVERY_SFTP_USER
+  - SHIM_DELIVERY_SFTP_HOST_KEY_PATH
+  - SHIM_DELIVERY_SFTP_AWS_ACCESS_KEY_ID
+  - SHIM_DELIVERY_SFTP_AWS_SECRET_ACCESS_KEY
+credential_env_note: >
+  SHIM_DELIVERY_SFTP_HOST_KEY_PATH is mandatory, not optional. Host-key verification is
+  the control that stops a checker being pointed at an impostor server that reports every
+  file as present.
+dependencies:
+  - sftp
+  - s3
+grants:
+  - "sshd: ChrootDirectory %h (/home/nfl_check_delivery_sftp)                 -- infra/sftp/sshd_config"
+  - "sshd: Match User nfl_check_delivery_sftp -> ForceCommand internal-sftp -R -- infra/sftp/sshd_config"
+  - "sshd: Match User nfl_check_delivery_sftp -> AuthenticationMethods publickey -- infra/sftp/sshd_config"
+  - "volume: sftp-upload mounted at <chroot>/outbound read-only               -- infra/docker-compose.yml"
+  - "s3:GetObject on arn:aws:s3:::${NFL_S3_BUCKET}/reports/* (source side of the comparison)"
+grants_rationale: >
+  internal-sftp -R enforces read-only at the SFTP subsystem, which is a server-side
+  control rather than a client-side promise. ChrootDirectory bounds the identity to a
+  single recipient so it cannot enumerate other clients' deliveries. The S3 read is
+  required because comparing a delivered checksum against nothing proves nothing — this
+  endpoint must read both sides itself, and it is scoped to the reports prefix only.
+local_enforcement: >
+  SFTP side ENFORCED: infra/sftp/sshd_config forces `internal-sftp -R` and public-key-only
+  login for this account, the upload volume is mounted read-only under its chroot, and
+  the server host keys are pinned through known_hosts with RejectPolicy. S3 side NOT
+  enforced and no S3 identity proven locally: floci accepts any access key and evaluates
+  no IAM policy, so the S3 read proves reachability and content only. The S3 key is the
+  one all five S3-using checks carry (declared under shared_with).
+shared_with:
+  - extraction_s3_marker
+  - extraction_manifest
+  - extraction_parquet_rowcount
+  - reporting_file
+shared_rationale: >
+  Locally every S3 check authenticates to floci with the same access key. floci accepts
+  any key and evaluates no IAM policy, so issuing five different keys would look like
+  separation while enforcing none. Production gives each check its own task role with
+  the aws_iam_policy below, and this block is then removed.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: DescribeTransferServer
+      Effect: Allow
+      Action:
+        - transfer:DescribeServer
+        - transfer:DescribeUser
+      Resource:
+        - arn:aws:transfer:${AWS_REGION}:${AWS_ACCOUNT_ID}:server/${NFL_TRANSFER_SERVER_ID}
+    - Sid: ReadDeliveredObjectsForOneRecipient
+      Effect: Allow
+      Action:
+        - s3:GetObject
+        - s3:GetObjectAttributes
+      Resource:
+        - arn:aws:s3:::${NFL_SFTP_BUCKET}/${NFL_SFTP_RECIPIENT}/*
+    - Sid: ReadSourceReportForComparison
+      Effect: Allow
+      Action:
+        - s3:GetObject
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}/reports/*
+    - Sid: ListOneRecipientPrefix
+      Effect: Allow
+      Action:
+        - s3:ListBucket
+      Resource:
+        - arn:aws:s3:::${NFL_SFTP_BUCKET}
+      Condition:
+        StringLike:
+          s3:prefix:
+            - ${NFL_SFTP_RECIPIENT}/*
+    - Sid: DenyWritesToDeliveryTarget
+      Effect: Deny
+      Action:
+        - s3:PutObject
+        - s3:DeleteObject
+      Resource:
+        - arn:aws:s3:::${NFL_SFTP_BUCKET}/*
+production_notes: >
+  With AWS Transfer Family the SFTP tree is S3-backed, so the chroot becomes a prefix
+  condition and the read-only forced command becomes the Deny on writes above. The
+  separation from the uploader identity is preserved either way.

@@ -1,0 +1,61 @@
+meta {
+  name: 13 B4 nfl_ingestion task log
+  type: http
+  seq: 13
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{chaos_dag_run_id}}/taskInstances/{{chaos_task_id}}/logs/{{chaos_try_number}}
+  body: none
+  auth: basic
+}
+
+headers {
+  Accept: text/plain
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 200 with log text", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(String(res.getBody()).length).to.be.above(0);
+  });
+
+    test("the gate failed for the stated reason", function () {
+      expect(String(res.getBody())).to.include("Is Failed = YES");
+      expect(String(res.getBody())).to.match(/\d+ row\(s\) rejected/);
+    });
+    test("the Operations alert was recorded for this task and this run", function () {
+      const log = String(res.getBody());
+      expect(log).to.include("OPERATIONS ALERT recorded");
+      expect(log).to.include("task=is_failed_gate");
+      expect(log).to.include("run=" + bru.getVar("chaos_dag_run_id"));
+      expect(log).to.not.include("OPERATIONS ALERT COULD NOT BE RECORDED");
+    });
+}
+
+docs {
+  ## What this proves
+  The alert path. The failed gate's log shows why it failed and the line `OPERATIONS ALERT recorded:
+  severity=critical ...`, written by the single failure hook after it inserted the alert row into
+  `observability.pipeline_event`. This log line is the HTTP-visible evidence of the alert.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_dag_run_id` from `Trigger nfl_ingestion`
+  - `chaos_task_id`, `chaos_try_number` from `nfl_ingestion task instances`
+
+  ## When it fails
+  `OPERATIONS ALERT COULD NOT BE RECORDED`: the hook could not write the event row (the `nfl_events` role
+  or the table is broken). No alert line at all: the failure hook is not attached to the task.
+}

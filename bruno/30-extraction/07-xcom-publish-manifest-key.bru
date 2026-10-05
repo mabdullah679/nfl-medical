@@ -1,0 +1,51 @@
+meta {
+  name: 07 XCom publish.manifest_key
+  type: http
+  seq: 7
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns/{{extraction_dag_run_id}}/taskInstances/publish/xcomEntries/manifest_key?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("s3_manifest_key", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key manifest_key", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("manifest_key");
+  });
+  test("value has the expected shape and was captured as s3_manifest_key", function () {
+    expect(res.getBody().value).to.be.a("string").and.not.equal("");
+    expect(bru.getVar("s3_manifest_key")).to.deep.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `publish` published under `manifest_key`: the S3 key of `manifest.json`.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `s3_manifest_key`
+
+  ## Consumes
+  - `extraction_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `manifest_key` (it failed or was skipped before that point). Used by: `16 S3 GET manifest`.
+}

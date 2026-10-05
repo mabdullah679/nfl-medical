@@ -1,0 +1,48 @@
+meta {
+  name: 17 Shim S3 marker
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{shim_url}}/checks/extraction/s3-marker?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("the check ran for the captured interval", function () {
+    expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+    expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+  });
+
+       test("the shim looked at the same key the DAG published", function () {
+         expect(res.getBody().measured.key_checked).to.equal(bru.getVar("s3_marker_key"));
+         expect(res.getBody().measured.exists).to.equal(true);
+       });
+}
+
+docs {
+  ## What this proves
+  The shim's verdict on the `_SUCCESS` marker, computed from the interval alone, lands on the same key the DAG published.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from the two `XCom validate_conf.interval_*_date` requests in this folder
+  - `s3_marker_key` from `06`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

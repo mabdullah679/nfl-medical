@@ -1,0 +1,66 @@
+meta {
+  name: 40 D11 Shim events show the retries and the alert
+  type: http
+  seq: 40
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/events?interval_start={{interval_start_date_marker}}&interval_end={{interval_end_date_marker}}&limit=200
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+      test("each retry of the pre-check was recorded as a retry event", function () {
+        const mine = res.getBody().measured.events.filter(e => e.run_id === bru.getVar("chaos_marker_dag_run_id"));
+        const retries = mine.filter(e => e.status === "retry");
+        expect(retries.length).to.equal(Number(bru.getVar("chaos_marker_max_tries")));
+        for (const r of retries) {
+          expect(r.step).to.equal("wait_for_success_marker");
+          expect(r.alert).to.equal(false);
+        }
+      });
+      test("the final failure is one alert row with a severity and an error summary naming the marker", function () {
+        const mine = res.getBody().measured.events.filter(e => e.run_id === bru.getVar("chaos_marker_dag_run_id"));
+        const failed = mine.filter(e => e.status === "failed");
+        expect(failed.map(e => e.step)).to.deep.equal(["wait_for_success_marker"]);
+        expect(failed[0].alert).to.equal(true);
+        expect(failed[0].severity).to.be.a("string").and.not.equal("");
+        expect(failed[0].error_summary).to.include(bru.getVar("chaos_marker_key"));
+        expect(failed[0].dag_id).to.equal("nfl_reporting");
+      });
+      test("the run wrote no success event: nothing was reported or delivered", function () {
+        const mine = res.getBody().measured.events.filter(e => e.run_id === bru.getVar("chaos_marker_dag_run_id"));
+        expect(mine.filter(e => e.status === "success").map(e => e.stage + "/" + e.step)).to.have.lengthOf(0);
+      });
+}
+
+docs {
+  ## What this proves
+  Retry, then alert, as rows. For the run started in `D8`, `observability.pipeline_event` holds one `retry`
+  event per retry of `wait_for_success_marker` (not alerts) and then exactly one `failed` event with
+  `metrics.alert = true`, a severity and an error summary that names the missing marker key. No success
+  event exists for the run.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date_marker`, `interval_end_date_marker` from `D3`, `D4`
+  - `chaos_marker_dag_run_id` from `D8`
+  - `chaos_marker_max_tries` from `D10`
+  - `chaos_marker_key` from `D2`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

@@ -1,0 +1,67 @@
+meta {
+  name: 50 E1 DMS DescribeReplicationTasks
+  type: http
+  seq: 50
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.DescribeReplicationTasks
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {}
+}
+
+script:post-response {
+  const tasks = (res.getBody() && res.getBody().ReplicationTasks) || [];
+  const task = tasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+  if (task) {
+    bru.setVar("chaos_dms_task_arn", task.ReplicationTaskArn);
+  }
+}
+
+tests {
+  test("HTTP 200, task running, ARN captured", function () {
+    expect(res.getStatus()).to.equal(200);
+    const task = res.getBody().ReplicationTasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+    expect(task.Status).to.equal("running");
+    expect(bru.getVar("chaos_dms_task_arn")).to.equal(task.ReplicationTaskArn);
+  });
+}
+
+docs {
+  ## What this proves
+  Scenario E (operator stops the DMS task) starts from a running task and captures its ARN.
+
+  ## Captures
+  - `chaos_dms_task_arn`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  400 with no `X-Amz-Target`: the header was edited away. 404 `UnknownOperationException`: the operation name is
+  wrong. On the local stub read `_provenance` beside each field: `measured` was read from a live system,
+  `derived` was computed from a measured value by the rule in `_provenance_detail`, `unknown` is null on
+  purpose. On real AWS a 400 `AccessDeniedException` names the missing `dms:` permission.
+}

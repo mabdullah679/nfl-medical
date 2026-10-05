@@ -1,0 +1,53 @@
+meta {
+  name: 05 XCom keys of publish
+  type: http
+  seq: 5
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns/{{extraction_dag_run_id}}/taskInstances/publish/xcomEntries
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const entries = (res.getBody() && res.getBody().xcom_entries) || [];
+  const hit = entries.find(e => e.key === "marker_key");
+  if (hit) {
+    bru.setVar("extraction_xcom_key", hit.key);
+  }
+}
+
+tests {
+  test("HTTP 200 with XCom entries", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+  });
+  test("key marker_key was published by publish and captured", function () {
+    expect(res.getBody().xcom_entries.map(e => e.key)).to.include("marker_key");
+    expect(bru.getVar("extraction_xcom_key")).to.equal("marker_key");
+  });
+}
+
+docs {
+  ## What this proves
+  Task `publish` published its outputs as XComs. The list carries keys only; values are fetched one key
+  at a time by the requests that follow.
+
+  ## Captures
+  - `extraction_xcom_key`
+
+  ## Consumes
+  - `extraction_dag_run_id`
+
+  ## When it fails
+  An empty list means `publish` did not finish. Check the task instances request.
+}

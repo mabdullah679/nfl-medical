@@ -1,0 +1,43 @@
+meta {
+  name: 05 A5 Lag check goes red
+  type: http
+  seq: 5
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/replication/lag
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is fail", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(false);
+    expect(res.getBody().state).to.equal("fail");
+  });
+  test("the check says replication is not progressing because the connector is PAUSED", function () {
+    expect(res.getBody().measured.connector_state).to.equal("PAUSED");
+    expect(res.getBody().summary).to.include("NOT progressing");
+  });
+}
+
+docs {
+  ## What this proves
+  The lag check does not report 'zero lag' just because nothing new was written: a non-running connector is a failure with unbounded lag.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Green while paused would be a shim defect: a stopped pipeline must never look healthy.
+}

@@ -1,0 +1,51 @@
+meta {
+  name: 16 XCom deliver_sftp.delivered_sha256
+  type: http
+  seq: 16
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/deliver_sftp/xcomEntries/delivered_sha256?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("delivered_sha256", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key delivered_sha256", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("delivered_sha256");
+  });
+  test("value has the expected shape and was captured as delivered_sha256", function () {
+    expect(String(res.getBody().value)).to.match(/^[0-9a-f]{64}$/);
+    expect(bru.getVar("delivered_sha256")).to.deep.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `deliver_sftp` published under `delivered_sha256`: the sha256 the DAG computed by reading the delivered file back from SFTP.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `delivered_sha256`
+
+  ## Consumes
+  - `delivery_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `delivered_sha256` (it failed or was skipped before that point). Used by: `19`.
+}

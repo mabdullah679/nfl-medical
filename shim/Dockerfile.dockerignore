@@ -1,0 +1,5 @@
+*
+!shim/
+shim/.venv/
+shim/**/__pycache__/
+shim/**/*.pyc

@@ -1,0 +1,50 @@
+meta {
+  name: 62 F3 nfl_ingestion task instances
+  type: http
+  seq: 62
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{chaos_badconf_dag_run_id}}/taskInstances
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 200 with task instances", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+  });
+  test("validate_conf is the one task that failed, on its first try", function () {
+    const failed = res.getBody().task_instances.filter(t => t.state === "failed");
+    expect(failed.map(t => t.task_id)).to.deep.equal(["validate_conf"]);
+    expect(failed[0].try_number).to.equal(1);
+  });
+  test("no other task ran: nothing was read or loaded", function () {
+    const ran = res.getBody().task_instances.filter(t => t.task_id !== "validate_conf" && t.state !== "upstream_failed");
+    expect(ran.map(t => t.task_id + "=" + t.state)).to.have.lengthOf(0);
+  });
+}
+
+docs {
+  ## What this proves
+  The run was stopped at `validate_conf`; every other task is `upstream_failed`, so nothing was read from staging or written to utm.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_badconf_dag_run_id` from `F1`
+
+  ## When it fails
+  Another task in `failed` or `success`: the conf check is not the first gate.
+}

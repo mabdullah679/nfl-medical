@@ -1,0 +1,48 @@
+meta {
+  name: 01 Airflow version
+  type: http
+  seq: 1
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/version
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("airflow_version", res.getBody().version);
+  }
+}
+
+tests {
+  test("HTTP 200 (credential accepted)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("Airflow 2.x stable REST API", function () {
+    expect(res.getBody().version).to.match(/^2\./);
+  });
+}
+
+docs {
+  ## What this proves
+  First link of the canonical chain: the API is reachable with the credential, and it is the 2.x stable REST API whose paths every later request uses.
+
+  ## Captures
+  - `airflow_version`
+
+  ## Consumes
+  - `airflow_user`, `airflow_password` (environment)
+
+  ## When it fails
+  401: supply `airflow_password`. Connection refused: `nfl-airflow` is down.
+}

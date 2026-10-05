@@ -1,0 +1,50 @@
+meta {
+  name: 06 nfl_ingestion task instance detail
+  type: http
+  seq: 6
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{ingestion_dag_run_id}}/taskInstances/{{ingestion_task_id}}
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 200 for the captured task", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().task_id).to.equal(bru.getVar("ingestion_task_id"));
+  });
+  test("it succeeded on the captured try", function () {
+    expect(res.getBody().state).to.equal("success");
+    expect(res.getBody().try_number).to.equal(Number(bru.getVar("ingestion_try_number")));
+  });
+  test("it has real start and end times", function () {
+    expect(res.getBody().start_date).to.be.a("string");
+    expect(res.getBody().end_date).to.be.a("string");
+    expect(res.getBody().duration).to.be.above(0);
+  });
+}
+
+docs {
+  ## What this proves
+  Timing, try number, operator and state of the load step on its own.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `ingestion_dag_run_id` from `03 Trigger nfl_ingestion`
+  - `ingestion_task_id`, `ingestion_try_number` from `05 nfl_ingestion task instances`
+
+  ## When it fails
+  404: the captured task id or run id is stale; re-send 03 to 05.
+}

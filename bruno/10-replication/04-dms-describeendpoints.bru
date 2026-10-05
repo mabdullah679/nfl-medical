@@ -1,0 +1,62 @@
+meta {
+  name: 04 DMS DescribeEndpoints
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.DescribeEndpoints
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {}
+}
+
+tests {
+      test("HTTP 200", function () {
+        expect(res.getStatus()).to.equal(200);
+      });
+      test("a MySQL source and a PostgreSQL target endpoint exist", function () {
+        const eps = res.getBody().Endpoints.map(e => String(e.EndpointType).toLowerCase() + ":" + e.EngineName);
+        expect(eps).to.include("source:mysql");
+        expect(eps).to.include("target:postgres");
+      });
+
+  test("the response is labelled synthetic exactly when the environment says this endpoint is the stub", function () {
+    const isStub = String(bru.getEnvVar("dms_is_stub")) === "true";
+    expect(res.getHeader("x-nfl-stub") === "true").to.equal(isStub);
+  });
+}
+
+docs {
+  ## What this proves
+  The task's two ends are a MySQL source and a PostgreSQL target, matching stage 1 of the design.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  400 with no `X-Amz-Target`: the header was edited away. 404 `UnknownOperationException`: the operation name is
+  wrong. On the local stub read `_provenance` beside each field: `measured` was read from a live system,
+  `derived` was computed from a measured value by the rule in `_provenance_detail`, `unknown` is null on
+  purpose. On real AWS a 400 `AccessDeniedException` names the missing `dms:` permission.
+}

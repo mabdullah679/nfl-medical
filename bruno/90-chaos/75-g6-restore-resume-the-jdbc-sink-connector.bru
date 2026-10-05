@@ -1,0 +1,45 @@
+meta {
+  name: 75 G6 RESTORE resume the JDBC sink connector
+  type: http
+  seq: 75
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+put {
+  url: {{connect_url}}/connectors/{{chaos_sink_connector_name}}/resume
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  if (bru.getVar("chaos_sink_connector_name") !== bru.getEnvVar("sink_connector_name")) {
+    throw new Error("no sink connector captured: send G1 first");
+  }
+}
+
+script:post-response {
+  bru.setVar("chaos_sink_resumed_at_ms", Date.now());
+}
+
+tests {
+  test("Kafka Connect accepted the resume (HTTP 202)", function () {
+    expect(res.getStatus()).to.equal(202);
+  });
+}
+
+docs {
+  ## What this proves
+  RESTORE for `G3`: the sink resumes from its committed offsets and lands whatever waited in Kafka.
+
+  ## Captures
+  - `chaos_sink_resumed_at_ms` (when the resume was accepted; `G8` waits for a beat newer than this)
+
+  ## Consumes
+  - `chaos_sink_connector_name` from `G1`
+
+  ## When it fails
+  Send it again; do not leave the folder until `G7` is green.
+}

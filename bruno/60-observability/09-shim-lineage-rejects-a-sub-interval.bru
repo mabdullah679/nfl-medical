@@ -1,0 +1,67 @@
+meta {
+  name: 09 Shim lineage rejects a sub-interval
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{shim_url}}/checks/lineage?interval_start={{interval_start_date}}&interval_end={{lineage_sub_interval_end}}
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const s = String(bru.getVar("interval_start_date"));
+  if (!/^\d{8}$/.test(s)) {
+    throw new Error("interval_start_date not captured: send 06 first");
+  }
+  const d = new Date(Date.UTC(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)) + 1));
+  bru.setVar("lineage_sub_interval_end", d.toISOString().slice(0, 10).replace(/-/g, ""));
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("verdict is fail", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(false);
+    expect(res.getBody().state).to.equal("fail");
+  });
+
+  test("nothing was matched: no stage has an event for exactly this range", function () {
+    const m = res.getBody().measured;
+    expect(m.total_events).to.equal(0);
+    expect(m.stages_with_events).to.have.lengthOf(0);
+    expect(m.stages_missing_events).to.have.members(["replication", "ingestion", "extraction", "reporting", "delivery"]);
+  });
+
+      test("the request really was a sub-interval of the clean interval", function () {
+        expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+        expect(Number(res.getBody().params.interval_end)).to.be.below(Number(bru.getVar("interval_end_date")));
+      });
+      test("the clean interval's events were seen and deliberately not counted", function () {
+        const others = res.getBody().measured.other_recorded_intervals_overlapping_request_not_counted.map(o => String(o.interval_start).replace(/-/g, "") + ".." + String(o.interval_end).replace(/-/g, ""));
+        expect(others).to.include(bru.getVar("interval_start_date") + ".." + bru.getVar("interval_end_date"));
+      });
+}
+
+docs {
+  ## What this proves
+  NEGATIVE test. The first two days of the clean interval were never run as an interval of their own, so
+  lineage for that range must be `ok: false` with zero events, even though the clean interval that contains
+  it is fully green. A range predicate on `interval_start` would return `ok: true` here; that was a real
+  defect in the shim and this request is its regression test.
+
+  ## Captures
+  - lineage_sub_interval_end (pre-request: the day after `interval_start_date`)
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from `06`, `07`
+
+  ## When it fails
+  `ok: true`: the lineage check is matching events of a wider interval. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

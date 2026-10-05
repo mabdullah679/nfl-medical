@@ -1,0 +1,54 @@
+meta {
+  name: 41 D12 RESTORE put the S3 _SUCCESS marker back
+  type: http
+  seq: 41
+  tags: [
+    chaos
+  ]
+}
+
+put {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{chaos_marker_key}}
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+script:pre-request {
+  const guards = require("./lib/guards.js");
+  guards.markerKey(bru);
+}
+
+tests {
+  test("S3 stored the object (HTTP 200)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the request went to the guarded marker key", function () {
+    expect(req.getUrl().endsWith("/" + bru.getVar("chaos_marker_key"))).to.equal(true);
+  });
+}
+
+docs {
+  ## What this proves
+  RESTORE for `D6`. The marker is a zero-byte object, so an empty PUT recreates it exactly (same bytes, same
+  ETag; only `LastModified` changes). Guarded like `D6`: the pre-request script throws, and nothing is sent,
+  unless `chaos_marker_key` is a captured `<prefix>/_SUCCESS` key, so it can never create an object under a
+  placeholder name.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_marker_key` from `D2`
+
+  ## When it fails
+  If this fails the interval stays unpublished. Send it again; do not leave the folder until `D13` is green.
+}

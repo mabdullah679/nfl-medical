@@ -1,0 +1,70 @@
+endpoint: /checks/reporting/file
+check: reporting.file
+summary: Does the generated report file exist, with what size and checksum.
+identity:
+  kind: aws_access_key
+  name: nfl_check_reporting_file
+  scope: >
+    PRODUCTION TARGET, not a local fact: locally floci accepts any key for any action,
+    so nothing below is enforced and a pass proves reachability only, no IAM identity.
+    floci/S3 at http://host.docker.internal:4566 (host: localhost:4566). GetObject plus GetObjectAttributes on the reports
+    prefix only. No access to the df_*/ extraction prefixes at all.
+credential_env: SHIM_REPORTING_FILE_AWS_SECRET_ACCESS_KEY
+credential_env_companions:
+  - SHIM_REPORTING_FILE_AWS_ACCESS_KEY_ID
+dependencies:
+  - s3
+grants:
+  - "s3:ListBucket on arn:aws:s3:::${NFL_S3_BUCKET} with prefix reports/"
+  - "s3:GetObject on arn:aws:s3:::${NFL_S3_BUCKET}/reports/*"
+  - "s3:GetObjectAttributes on arn:aws:s3:::${NFL_S3_BUCKET}/reports/*"
+grants_rationale: >
+  The checksum must be computed over the real bytes, so GetObject is required. Scope is
+  the reports prefix, which keeps the reporting checker out of the raw extraction data
+  even though both live in one bucket.
+local_enforcement: >
+  NOT enforced locally, and no S3 identity is proven locally. floci accepts any access
+  key for every S3 action and evaluates no IAM policy, so a passing call proves only
+  that the endpoint is REACHABLE and the object is there; it proves nothing about who
+  is allowed to read it. All five S3-using checks carry the same floci key (declared
+  under shared_with). The grants and aws_iam_policy are the production target; what
+  holds locally is only that this code path issues no other S3 call.
+shared_with:
+  - extraction_s3_marker
+  - extraction_manifest
+  - extraction_parquet_rowcount
+  - delivery_sftp
+shared_rationale: >
+  Locally every S3 check authenticates to floci with the same access key. floci accepts
+  any key and evaluates no IAM policy, so issuing five different keys would look like
+  separation while enforcing none. Production gives each check its own task role with
+  the aws_iam_policy below, and this block is then removed.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ListReportsPrefix
+      Effect: Allow
+      Action:
+        - s3:ListBucket
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}
+      Condition:
+        StringLike:
+          s3:prefix:
+            - reports/*
+    - Sid: ReadReports
+      Effect: Allow
+      Action:
+        - s3:GetObject
+        - s3:GetObjectAttributes
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}/reports/*
+    - Sid: DenyExtractionPrefixes
+      Effect: Deny
+      Action:
+        - s3:GetObject
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}/df_*
+production_notes: >
+  If reports move to their own bucket in production, replace the prefix conditions with
+  a bucket ARN and drop the Deny statement.

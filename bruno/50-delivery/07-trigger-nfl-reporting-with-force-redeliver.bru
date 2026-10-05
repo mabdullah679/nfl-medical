@@ -1,0 +1,88 @@
+meta {
+  name: 07 Trigger nfl_reporting with force_redeliver
+  type: http
+  seq: 7
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+post {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+body:json {
+  {
+    "dag_run_id": "{{new_dag_run_id}}",
+    "conf": {
+      "interval_start": "{{interval_start_ts}}",
+      "interval_end": "{{interval_end_ts}}",
+      "force_redeliver": true
+    }
+  }
+}
+
+script:pre-request {
+  const stamp = new Date().toISOString().replace(/[-:.]/g, "");
+  bru.setVar("new_dag_run_id", "bruno_delivery_" + stamp);
+  bru.setVar("delivery_dag_run_id", "");
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("delivery_dag_run_id", res.getBody().dag_run_id);
+  }
+}
+
+tests {
+  test("Airflow accepted the run (HTTP 200)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the run id Airflow stored is the one this request generated", function () {
+    expect(res.getBody().dag_run_id).to.equal(bru.getVar("new_dag_run_id"));
+    expect(bru.getVar("delivery_dag_run_id")).to.equal(res.getBody().dag_run_id);
+  });
+
+  test("the run carries the interval from the environment and force_redeliver true", function () {
+    expect(res.getBody().dag_id).to.equal("nfl_reporting");
+    expect(res.getBody().conf.interval_start).to.equal(bru.getEnvVar("interval_start_ts"));
+    expect(res.getBody().conf.interval_end).to.equal(bru.getEnvVar("interval_end_ts"));
+    expect(res.getBody().conf.force_redeliver).to.equal(true);
+  });
+  test("the run is queued or running, not already finished", function () {
+    expect(["queued", "running"]).to.include(res.getBody().state);
+  });
+}
+
+docs {
+  ## What this proves
+  STATE-CHANGING: starts an `nfl_reporting` run whose conf carries `"force_redeliver": true`, so its
+  `deliver_sftp` task must really upload: write under the temp name, read back and verify, rename to the
+  final name. Without the flag a rerun finds the file already delivered and skips, which would prove
+  nothing about the upload path. The bytes delivered are the same report, so the recipient's file content
+  does not change; only its modification time does.
+
+  ## Captures
+  - `delivery_dag_run_id`
+  - new_dag_run_id (pre-request, used only by this request's body)
+
+  ## Consumes
+  - `interval_start_ts`, `interval_end_ts`, `airflow_user`, `airflow_password` (environment)
+
+  ## When it fails
+  401: `airflow_password` was not supplied (desktop: fill the secret in the environment; CLI: `--env-var`).
+  404: the DAG is not loaded, see `00-preflight/06 Airflow DAG import errors`.
+  409: a run with this id exists, Send again (the id is regenerated).
+  400: the conf was rejected by Airflow itself; the body's `detail` says why.
+}

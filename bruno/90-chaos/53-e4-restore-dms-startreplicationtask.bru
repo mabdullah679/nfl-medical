@@ -1,0 +1,69 @@
+meta {
+  name: 53 E4 RESTORE DMS StartReplicationTask
+  type: http
+  seq: 53
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.StartReplicationTask
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {
+    "ReplicationTaskArn": "{{chaos_dms_task_arn}}",
+    "StartReplicationTaskType": "resume-processing"
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the response has the AWS DMS shape: one ReplicationTask object, not a list", function () {
+    expect(res.getBody().ReplicationTask, "AWS StartReplicationTask returns a single ReplicationTask object").to.be.an("object");
+    expect(res.getBody().ReplicationTasks).to.equal(undefined);
+    expect(res.getBody().ReplicationTask.ReplicationTaskArn).to.equal(bru.getVar("chaos_dms_task_arn"));
+  });
+  test("the task reads running and the recorded intent is Start again", function () {
+    expect(res.getBody().ReplicationTask.Status).to.equal("running");
+    expect(res.getBody().ReplicationTask._stub_intent.last_command).to.equal("StartReplicationTask");
+    expect(res.getBody().ReplicationTask._stub_intent.last_start_type).to.equal("resume-processing");
+  });
+}
+
+docs {
+  ## What this proves
+  RESTORE for `E2`: the stub's recorded intent goes back to Start (`resume-processing`). Status was `running` throughout, because the connector was.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_dms_task_arn` from `E1`
+
+  ## When it fails
+  400 with no `X-Amz-Target`: the header was edited away. 404 `UnknownOperationException`: the operation name is
+  wrong. On the local stub read `_provenance` beside each field: `measured` was read from a live system,
+  `derived` was computed from a measured value by the rule in `_provenance_detail`, `unknown` is null on
+  purpose. On real AWS a 400 `AccessDeniedException` names the missing `dms:` permission.
+}

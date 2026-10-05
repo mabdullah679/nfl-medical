@@ -1,0 +1,55 @@
+meta {
+  name: 13 XCom deliver_sftp.delivered
+  type: http
+  seq: 13
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/deliver_sftp/xcomEntries/delivered?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("delivery_delivered", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key delivered", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("delivered");
+  });
+  test("value has the expected shape and was captured as delivery_delivered", function () {
+    expect(res.getBody().value).to.be.a("boolean");
+    expect(bru.getVar("delivery_delivered")).to.deep.equal(res.getBody().value);
+  });
+
+  test("the task says it delivered in this run", function () {
+    expect(res.getBody().value).to.equal(true);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `deliver_sftp` published under `delivered`: true only when this run itself uploaded the file.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `delivery_delivered`
+
+  ## Consumes
+  - `delivery_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `delivered` (it failed or was skipped before that point).
+}

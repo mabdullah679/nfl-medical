@@ -1,0 +1,43 @@
+meta {
+  name: 01 A1 Kafka Connect list connectors
+  type: http
+  seq: 1
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{connect_url}}/connectors
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const names = Array.isArray(res.getBody()) ? res.getBody() : [];
+  if (names.includes(bru.getEnvVar("source_connector_name"))) {
+    bru.setVar("chaos_connector_name", bru.getEnvVar("source_connector_name"));
+  }
+}
+
+tests {
+  test("HTTP 200 and the source connector was captured", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("chaos_connector_name")).to.equal(bru.getEnvVar("source_connector_name"));
+  });
+}
+
+docs {
+  ## What this proves
+  Scenario A (replication stops) starts by resolving the connector to break, so the folder runs on its own.
+
+  ## Captures
+  - `chaos_connector_name`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Connector not registered: `scripts/up.sh`.
+}

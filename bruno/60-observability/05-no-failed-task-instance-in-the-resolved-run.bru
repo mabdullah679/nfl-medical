@@ -1,0 +1,62 @@
+meta {
+  name: 05 No failed task instance in the resolved run
+  type: http
+  seq: 5
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+post {
+  url: {{airflow_url}}/api/v1/dags/~/dagRuns/~/taskInstances/list
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+body:json {
+  {
+    "dag_ids": ["nfl_reporting"],
+    "dag_run_ids": ["{{obs_dag_run_id_raw}}"],
+    "page_limit": 100
+  }
+}
+
+tests {
+  test("HTTP 200 and the run filter was applied", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+    const other = res.getBody().task_instances.filter(t => t.dag_run_id !== bru.getVar("obs_dag_run_id_raw"));
+    expect(other).to.have.lengthOf(0);
+  });
+  test("every task instance of the resolved run ended in success", function () {
+    const notOk = res.getBody().task_instances.filter(t => t.state !== "success").map(t => t.task_id + "=" + t.state);
+    expect(notOk, notOk.join(", ")).to.have.lengthOf(0);
+  });
+  test("the run includes the pre-check, the gate and the delivery step", function () {
+    const ids = res.getBody().task_instances.map(t => t.task_id);
+    expect(ids).to.include.members(["wait_for_success_marker", "is_process_failed", "deliver_sftp"]);
+  });
+}
+
+docs {
+  ## What this proves
+  Every task of the resolved `nfl_reporting` run ended in success, including the marker pre-check, the "Is Process Failed" gate and the SFTP delivery step. Same endpoint as `04`, filtered to one run.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `obs_dag_run_id_raw` from `03`
+
+  ## When it fails
+  A task that is not `success` names the failing step; send `40-reporting` for its log.
+}

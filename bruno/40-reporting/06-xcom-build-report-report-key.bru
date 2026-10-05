@@ -1,0 +1,52 @@
+meta {
+  name: 06 XCom build_report.report_key
+  type: http
+  seq: 6
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{reporting_dag_run_id}}/taskInstances/build_report/xcomEntries/{{reporting_xcom_key}}?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("report_key", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key report_key", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("report_key");
+  });
+  test("value has the expected shape and was captured as report_key", function () {
+    expect(res.getBody().value).to.be.a("string").and.not.equal("");
+    expect(bru.getVar("report_key")).to.deep.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `build_report` published under `report_key`: the S3 key of the report file.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `report_key`
+
+  ## Consumes
+  - `reporting_dag_run_id`
+  - `reporting_xcom_key` from the XCom keys request before this one
+
+  ## When it fails
+  404: the task did not publish `report_key` (it failed or was skipped before that point). Used by: `13 S3 HEAD report object`.
+}

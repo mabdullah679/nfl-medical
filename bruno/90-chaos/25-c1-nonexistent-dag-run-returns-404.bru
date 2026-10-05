@@ -1,0 +1,45 @@
+meta {
+  name: 25 C1 Nonexistent DAG run returns 404
+  type: http
+  seq: 25
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/bruno_chaos_run_that_does_not_exist
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 404", function () {
+    expect(res.getStatus()).to.equal(404);
+  });
+  test("the error body is a problem document naming the missing run", function () {
+    expect(res.getBody().status).to.equal(404);
+    expect(res.getBody().title).to.equal("DAGRun not found");
+    expect(res.getBody().detail).to.include("bruno_chaos_run_that_does_not_exist");
+  });
+}
+
+docs {
+  ## What this proves
+  Scenario C (client error). Asking for a run that does not exist is a clean 404 with a problem document, not a 500 and not an empty 200. Not destructive.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  401 instead of 404: the credential is missing; auth is evaluated first.
+}

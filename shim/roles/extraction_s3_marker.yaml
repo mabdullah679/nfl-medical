@@ -1,0 +1,70 @@
+endpoint: /checks/extraction/s3-marker
+check: extraction.s3_marker
+summary: Does _SUCCESS exist under the interval prefix.
+identity:
+  kind: aws_access_key
+  name: nfl_check_extraction_marker
+  scope: >
+    PRODUCTION TARGET, not a local fact: locally floci accepts any key for any action,
+    so nothing below is enforced and a pass proves reachability only, no IAM identity.
+    floci/S3 at http://host.docker.internal:4566 (host: localhost:4566). Existence only: HeadObject on the _SUCCESS key
+    and ListBucket on the interval prefix. Deliberately NO s3:GetObject — proving a
+    marker exists never requires reading data, and withholding GetObject means this
+    identity cannot read a single Parquet byte.
+credential_env: SHIM_EXTRACTION_MARKER_AWS_SECRET_ACCESS_KEY
+credential_env_companions:
+  - SHIM_EXTRACTION_MARKER_AWS_ACCESS_KEY_ID
+dependencies:
+  - s3
+grants:
+  - "s3:ListBucket on arn:aws:s3:::${NFL_S3_BUCKET} with prefix df_*/ "
+  - "s3:GetObjectAttributes on arn:aws:s3:::${NFL_S3_BUCKET}/df_*/_SUCCESS"
+grants_rationale: >
+  HeadObject is authorised by s3:GetObject OR s3:GetObjectAttributes. Granting
+  GetObjectAttributes alone gives existence plus size and ETag while still denying the
+  object body, which is exactly the check's need and no more.
+local_enforcement: >
+  NOT enforced locally, and no S3 identity is proven locally. floci accepts any access
+  key for every S3 action and evaluates no IAM policy, so a passing call proves only
+  that the endpoint is REACHABLE and the object is there; it proves nothing about who
+  is allowed to read it. All five S3-using checks carry the same floci key (declared
+  under shared_with). The grants and aws_iam_policy are the production target; what
+  holds locally is only that this code path issues no other S3 call.
+shared_with:
+  - extraction_manifest
+  - extraction_parquet_rowcount
+  - reporting_file
+  - delivery_sftp
+shared_rationale: >
+  Locally every S3 check authenticates to floci with the same access key. floci accepts
+  any key and evaluates no IAM policy, so issuing five different keys would look like
+  separation while enforcing none. Production gives each check its own task role with
+  the aws_iam_policy below, and this block is then removed.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ListIntervalPrefixes
+      Effect: Allow
+      Action:
+        - s3:ListBucket
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}
+      Condition:
+        StringLike:
+          s3:prefix:
+            - df_*/
+    - Sid: MarkerExistenceOnly
+      Effect: Allow
+      Action:
+        - s3:GetObjectAttributes
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}/df_*/_SUCCESS
+    - Sid: DenyObjectBodies
+      Effect: Deny
+      Action:
+        - s3:GetObject
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}/*
+production_notes: >
+  The explicit Deny on s3:GetObject is defence against a future broad allow attached to
+  the same role, since an explicit Deny cannot be overridden by any Allow.

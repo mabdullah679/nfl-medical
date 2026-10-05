@@ -1,0 +1,51 @@
+meta {
+  name: 46 D17 Lineage for the clean interval is green again
+  type: http
+  seq: 46
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/lineage?interval_start={{interval_start_date_marker}}&interval_end={{interval_end_date_marker}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+
+      test("reporting's latest terminal event is a success again, and the failure is still on record", function () {
+        const rep = res.getBody().measured.stages.reporting;
+        expect(rep.latest_terminal_status).to.equal("success");
+        expect(res.getBody().measured.stages_failed).to.have.lengthOf(0);
+        expect(rep.by_status.map(s => s.status)).to.include.members(["success", "failed", "retry"]);
+      });
+}
+
+docs {
+  ## What this proves
+  Proof of restore for the whole scenario: lineage for the clean interval is `ok: true` again. The failed
+  and retry events of the injected run are still on record in the per-status counts; they are history, not
+  the current verdict.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date_marker`, `interval_end_date_marker` from `D3`, `D4`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

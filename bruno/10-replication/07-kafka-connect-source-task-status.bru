@@ -1,0 +1,40 @@
+meta {
+  name: 07 Kafka Connect source task status
+  type: http
+  seq: 7
+  tags: [
+    local-only
+  ]
+}
+
+get {
+  url: {{connect_url}}/connectors/{{connector_name}}/tasks/{{connector_task_id}}/status
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200 for the captured task", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().id).to.equal(Number(bru.getVar("connector_task_id")));
+  });
+  test("task is RUNNING with no error trace", function () {
+    expect(res.getBody().state, res.getBody().trace).to.equal("RUNNING");
+    expect(res.getBody().trace).to.equal(undefined);
+  });
+}
+
+docs {
+  ## What this proves
+  The task that actually reads the MySQL binlog is RUNNING. A connector can be RUNNING while its task is FAILED; this is the request that shows the difference.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `connector_name` from `05`
+  - `connector_task_id` from `06 Kafka Connect source status`
+
+  ## When it fails
+  `trace` in the body is the Java stack trace of the failure (bad credentials, binlog purged, schema change).
+}

@@ -1,0 +1,42 @@
+# Credential files. The real env file is infra/nfl.env, created by
+# scripts/init-env.sh. Patterns, not exact names: the file has been renamed
+# before, and a copy or backup of it must never be staged either.
+.env
+.env.*
+*.env
+*.env.*
+*.env~
+# The two committed templates hold placeholders only.
+!infra/env.example.txt
+!shim/env.example
+
+# Connect credentials rendered at runtime by scripts/up.sh
+infra/secrets/*
+!infra/secrets/.gitignore
+
+# SFTP host keys, checker key pair and known_hosts from scripts/init-env.sh
+infra/keys/
+
+# Key material under any name
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.ppk
+*_key
+*_ed25519
+*_rsa
+*_ecdsa
+id_*
+known_hosts
+*.properties
+
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# The source design diagram carries the real client and platform names; it stays
+# on disk and out of the repository.
+design/

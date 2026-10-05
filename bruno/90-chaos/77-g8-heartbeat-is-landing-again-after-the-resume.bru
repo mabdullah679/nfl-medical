@@ -1,0 +1,68 @@
+meta {
+  name: 77 G8 Heartbeat is landing again after the resume
+  type: http
+  seq: 77
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/ingestion/freshness
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const resumedAt = Number(bru.getVar("chaos_sink_resumed_at_ms"));
+  if (!(resumedAt > 0)) {
+    throw new Error("no resume time captured: send G6 first");
+  }
+  const started = Date.now();
+  const limitMs = Number(bru.getEnvVar("poll_timeout_seconds") || 240) * 1000;
+  let last = null;
+  while (true) {
+    const r = await bru.sendRequest({ method: "GET", url: bru.getEnvVar("shim_url") + "/checks/ingestion/freshness", headers: { Accept: "application/json" } });
+    last = r.data && r.data.measured && r.data.measured.heartbeat_last_beat_at;
+    if (last && Date.parse(last) > resumedAt) { break; }
+    if (Date.now() - started > limitMs) { break; }
+    await bru.sleep(2000);
+  }
+  bru.setVar("chaos_heartbeat_waited_ms", Date.now() - started);
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("a beat written at the source AFTER the resume has landed in staging through the sink", function () {
+    const beat = Date.parse(res.getBody().measured.heartbeat_last_beat_at);
+    expect(beat, "newest beat " + res.getBody().measured.heartbeat_last_beat_at + " is not newer than the resume, after waiting " + bru.getVar("chaos_heartbeat_waited_ms") + " ms").to.be.above(Number(bru.getVar("chaos_sink_resumed_at_ms")));
+  });
+}
+
+docs {
+  ## What this proves
+  Proof that data flows end to end again, not just that the connector says RUNNING. The pre-request script
+  waits until the newest replication heartbeat in staging carries a source timestamp LATER than the moment
+  `G6` resumed the sink. A beat is written in MySQL about every 20 to 50 s and reaches staging only through
+  the sink, so such a row can exist only if the resumed sink is writing. If none arrives inside
+  `poll_timeout_seconds` the test fails.
+
+  ## Captures
+  - `chaos_heartbeat_waited_ms`
+
+  ## Consumes
+  - `chaos_sink_resumed_at_ms` from `G6`
+
+  ## When it fails
+  Heartbeat age keeps growing: the sink is RUNNING but not writing; `docker logs nfl-kafka-connect`. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

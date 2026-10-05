@@ -1,0 +1,51 @@
+meta {
+  name: 17 XCom deliver_sftp.delivered_size_bytes
+  type: http
+  seq: 17
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/deliver_sftp/xcomEntries/delivered_size_bytes?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("delivered_size_bytes", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key delivered_size_bytes", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("delivered_size_bytes");
+  });
+  test("value has the expected shape and was captured as delivered_size_bytes", function () {
+    expect(res.getBody().value).to.be.a("number").and.above(0);
+    expect(bru.getVar("delivered_size_bytes")).to.deep.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `deliver_sftp` published under `delivered_size_bytes`: the size of the uploaded file as the SFTP server reported it.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `delivered_size_bytes`
+
+  ## Consumes
+  - `delivery_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `delivered_size_bytes` (it failed or was skipped before that point). Used by: `19`.
+}

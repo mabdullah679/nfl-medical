@@ -1,0 +1,49 @@
+endpoint: /checks/events
+check: events
+summary: The pipeline events and Operations alerts recorded for exactly one interval, or those recorded with no interval, newest first with counts.
+identity:
+  kind: postgres_role
+  name: nfl_check_events
+  scope: >
+    NFL Postgres as the dedicated read-only role nfl_check_events. Reads whole rows of
+    observability.pipeline_event, including message and metrics (alert flag, severity,
+    error summary), and returns them. Nothing in staging or utm.
+credential_env: SHIM_EVENTS_PG_DSN
+dependencies:
+  - nfl_postgres
+grants:
+  - "CREATE ROLE nfl_check_events LOGIN PASSWORD '<secret>';"
+  - "GRANT CONNECT ON DATABASE nfl TO nfl_check_events;"
+  - "GRANT USAGE ON SCHEMA observability TO nfl_check_events;"
+  - "ALTER ROLE nfl_check_events SET default_transaction_read_only = on;"
+  - "GRANT SELECT ON observability.pipeline_event TO nfl_check_events;"
+grants_rationale: >
+  This endpoint returns event rows, so it needs every column of the one table it reads;
+  a table-level SELECT is the minimum. It is kept apart from the lineage identity
+  because metrics and message can carry error text and the raw conf of a rejected run, a
+  wider exposure than the stage/status columns lineage reads.
+local_enforcement: >
+  ENFORCED by Postgres when the DSN in $SHIM_EVENTS_PG_DSN logs in as nfl_check_events with
+  exactly the grants above: the role authenticates with its own password, can SELECT
+  only the listed columns, and cannot write. The shim refuses to start if that DSN
+  carries any other user, or a user another endpoint also carries. NOT verified by the
+  shim: that the database holds no EXTRA grant for this role; that is the DDL's job
+  (infra/sql) and is audited with \dp, not by this service.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ConnectAsEventsRole
+      Effect: Allow
+      Action:
+        - rds-db:connect
+      Resource:
+        - arn:aws:rds-db:${AWS_REGION}:${AWS_ACCOUNT_ID}:dbuser:${NFL_PG_RESOURCE_ID}/nfl_check_events
+    - Sid: ReadOwnSecret
+      Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:nfl/shim/events-*
+production_notes: >
+  In production alerts also go to the Operations channel (SNS/PagerDuty) from the DAG
+  failure hook; this endpoint reads only the Postgres record of them.

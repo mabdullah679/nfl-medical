@@ -1,0 +1,67 @@
+meta {
+  name: 19 B10 Ingestion quality is red for the chaos interval in the default layer
+  type: http
+  seq: 19
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/ingestion/quality?interval_start={{interval_start_date_chaos}}&interval_end={{interval_end_date_chaos}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("verdict is fail", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(false);
+    expect(res.getBody().state).to.equal("fail");
+  });
+
+      test("the check ran for the captured interval", function () {
+        expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date_chaos")));
+        expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date_chaos")));
+      });
+
+      test("the default layer is utm, whose surviving rows are clean", function () {
+        const m = res.getBody().measured;
+        expect(m.layer).to.equal("utm");
+        expect(m.null_business_keys).to.equal(0);
+        expect(m.duplicate_business_key_groups).to.equal(0);
+      });
+      test("the verdict is red because the interval's ingestion batch FAILED with rejects", function () {
+        const b = res.getBody().measured.ingestion_batch;
+        expect(b.recorded).to.equal(true);
+        expect(b.status).to.equal("FAILED");
+        expect(b.rows_rejected).to.equal(bru.getVar("chaos_rows_rejected"));
+        expect(res.getBody().measured.rejected_rows).to.equal(bru.getVar("chaos_rows_rejected"));
+        expect(b.rows_read).to.equal(b.rows_loaded + b.rows_rejected);
+      });
+}
+
+docs {
+  ## What this proves
+  NEGATIVE test. With no `layer` parameter the quality check looks at utm, where only the rows that survived
+  the load are present and every one of them is clean. It must still answer `ok: false`, because the
+  interval's `utm.ingestion_batch` row is FAILED and rows were rejected. Reporting "clean" for an interval
+  whose batch failed was a real defect in the shim; this request is its regression test. The reject count is
+  cross-checked against the DAG's own `rows_rejected` XCom.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date_chaos`, `interval_end_date_chaos` from `B6`, `B7`
+  - `chaos_rows_rejected` from `B5`
+
+  ## When it fails
+  `ok: true`: the check is judging the surviving rows only and ignoring the batch. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

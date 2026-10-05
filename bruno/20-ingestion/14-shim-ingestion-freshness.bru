@@ -1,0 +1,72 @@
+meta {
+  name: 14 Shim ingestion freshness
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{shim_url}}/checks/ingestion/freshness
+  body: none
+  auth: none
+}
+
+script:post-response {
+  bru.setVar("freshness_ok", res.getBody().ok);
+  bru.setVar("freshness_heartbeat_age_seconds", res.getBody().measured && res.getBody().measured.heartbeat_age_seconds);
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+
+      test("the end-to-end heartbeat is wired, has landed, and is inside its limit", function () {
+        const m = res.getBody().measured;
+        expect(m.heartbeat_configured).to.equal(true);
+        expect(m.heartbeat_rows).to.be.above(0);
+        expect(Object.keys(m.heartbeat_sources).length).to.be.at.least(1);
+        expect(m.heartbeat_age_seconds).to.be.at.most(res.getBody().threshold.heartbeat_max_age_seconds);
+      });
+      test("utm was loaded by the run this folder just triggered (inside the threshold)", function () {
+        expect(res.getBody().measured.utm_age_seconds).to.be.at.most(res.getBody().threshold.max_age_seconds);
+      });
+      test("the verdict is exactly what the measured ages imply", function () {
+        const m = res.getBody().measured;
+        const t = res.getBody().threshold;
+        const fresh = m.heartbeat_age_seconds <= t.heartbeat_max_age_seconds && m.utm_age_seconds <= t.max_age_seconds;
+        expect(res.getBody().ok).to.equal(fresh);
+      });
+}
+
+docs {
+  ## What this proves
+  Replication is fresh END TO END and utm was just loaded. The end-to-end clock is the replication
+  heartbeat: Debezium writes a row in MySQL on a timer, and it travels the same path as data (binlog,
+  Kafka, JDBC sink) into `staging.replication_heartbeat`. The check takes the newest beat of every source
+  and judges the stalest one against `threshold.heartbeat_max_age_seconds`; a paused source, a dead sink
+  or a stuck Kafka all age it. `utm_age_seconds` is judged against `threshold.max_age_seconds`.
+  `staging_age_seconds` (last landed business row) is informational only: an idle source ages it with
+  nothing wrong.
+
+  This request asserts `ok: true`. If the heartbeat table is configured but empty the shim answers 503
+  (could not run), which fails the first test: it is never a pass.
+
+  ## Captures
+  - `freshness_ok`
+  - `freshness_heartbeat_age_seconds`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  `heartbeat_age_seconds` over its limit: beats stopped landing. Check `10-replication/10 Shim connector
+  status` (both connectors) and `docker logs nfl-kafka-connect`. `utm_age_seconds` over the threshold right
+  after a successful run means the ingestion run did not write utm: check `09 XCom
+  load_staging_to_utm.load_by_table`. HTTP 503: the check could not run (heartbeat table empty or a grant
+  missing); read `error` in the body.
+}

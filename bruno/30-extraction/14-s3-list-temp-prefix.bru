@@ -1,0 +1,46 @@
+meta {
+  name: 14 S3 list temp prefix
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{s3_endpoint}}/{{s3_bucket}}?list-type=2&prefix=_tmp/{{interval_prefix}}/
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+tests {
+  test("HTTP 200 and the listing is for the temp prefix of this interval", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(String(res.getBody())).to.include("<Prefix>_tmp/" + bru.getVar("interval_prefix") + "/</Prefix>");
+  });
+  test("no temp object is left behind after publish", function () {
+    const keys = String(res.getBody()).match(/<Key>[^<]+<\/Key>/g) || [];
+    expect(keys, keys.join(", ")).to.have.lengthOf(0);
+    expect(String(res.getBody())).to.include("<KeyCount>0</KeyCount>");
+  });
+}
+
+docs {
+  ## What this proves
+  The job writes Parquet under `_tmp/<interval prefix>/<run hash>/` and removes it after publishing. An empty listing here means no half-written output is lying around for this interval.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_prefix` from `08 XCom publish.interval_prefix`
+
+  ## When it fails
+  Keys listed here are leftovers of a run that died between write and publish; the key names carry the run hash.
+}

@@ -1,0 +1,18 @@
+docs {
+  # NFL Data Platform
+  
+  One request per observable fact about the reporting pipeline, in run order. Read `README.md` in this
+  folder for the environment setup, the run order and the full chaining map.
+  
+  Rules the collection follows:
+  - A request that needs a value from an earlier response captures it in that earlier request's
+    post-response script. No value is pasted by hand.
+  - Every check that is not HTTP by nature (SQL, binlog position, Parquet footers, SFTP) is exposed by the
+    check shim, so it is a Send button like everything else.
+  - HTTP 200 from the shim means the check RAN; the verdict is `ok`. HTTP 503 means it could not run and is
+    never a pass.
+  - A request never passes on a red verdict. The requests that expect `ok: false` are negative tests and say
+    so in their names.
+  - `90-chaos` breaks things on purpose. Every destructive request is followed by its restore, and the two
+    S3 requests that delete and re-create the `_SUCCESS` marker refuse to run without a captured marker key.
+}

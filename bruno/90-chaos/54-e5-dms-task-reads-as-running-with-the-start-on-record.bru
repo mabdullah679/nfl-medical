@@ -1,0 +1,62 @@
+meta {
+  name: 54 E5 DMS task reads as running with the Start on record
+  type: http
+  seq: 54
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.DescribeReplicationTasks
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {}
+}
+
+tests {
+  test("HTTP 200 and Describe reports running", function () {
+    expect(res.getStatus()).to.equal(200);
+    const task = res.getBody().ReplicationTasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+    expect(task.Status).to.equal("running");
+  });
+  test("the restore is on record: the last command is StartReplicationTask", function () {
+    const task = res.getBody().ReplicationTasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+    expect(task._stub_intent.last_command).to.equal("StartReplicationTask");
+  });
+}
+
+docs {
+  ## What this proves
+  Proof of restore: Describe reads `running` and the stub's recorded last command is the Start from `E4`.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  400 with no `X-Amz-Target`: the header was edited away. 404 `UnknownOperationException`: the operation name is
+  wrong. On the local stub read `_provenance` beside each field: `measured` was read from a live system,
+  `derived` was computed from a measured value by the rule in `_provenance_detail`, `unknown` is null on
+  purpose. On real AWS a 400 `AccessDeniedException` names the missing `dms:` permission.
+}

@@ -1,0 +1,43 @@
+meta {
+  name: 09 A9 Lag check is green again
+  type: http
+  seq: 9
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/replication/lag
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("lag is back inside the threshold with the connector RUNNING", function () {
+    expect(res.getBody().measured.connector_state).to.equal("RUNNING");
+    expect(res.getBody().measured.lag_seconds).to.be.at.most(res.getBody().threshold.lag_seconds_max);
+  });
+}
+
+docs {
+  ## What this proves
+  Lag is back inside budget after the resume.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  HTTP 503 right after a resume means the shim has not yet seen the offset move; send again in a few seconds.
+}

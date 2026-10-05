@@ -1,0 +1,65 @@
+meta {
+  name: 20 B11 Shim events show the alert row of the failed run
+  type: http
+  seq: 20
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/events?interval_start={{interval_start_date_chaos}}&interval_end={{interval_end_date_chaos}}&status=failed&limit=200
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+      test("the check ran for the captured interval", function () {
+        expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date_chaos")));
+        expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date_chaos")));
+      });
+
+      test("the run this folder triggered wrote exactly one failed event, at the gate", function () {
+        const mine = res.getBody().measured.events.filter(e => e.run_id === bru.getVar("chaos_dag_run_id"));
+        expect(mine.map(e => e.step)).to.deep.equal(["is_failed_gate"]);
+        expect(mine[0].stage).to.equal("ingestion");
+        expect(mine[0].dag_id).to.equal("nfl_ingestion");
+        expect(mine[0].status).to.equal("failed");
+      });
+      test("that row is an Operations alert with a severity and an error summary", function () {
+        const row = res.getBody().measured.events.find(e => e.run_id === bru.getVar("chaos_dag_run_id"));
+        expect(row.alert).to.equal(true);
+        expect(row.severity).to.equal("critical");
+        expect(row.error_summary).to.include("Is Failed = YES");
+        expect(row.error_summary).to.include(bru.getVar("chaos_rows_rejected") + " row(s) rejected");
+        expect(row.metrics.notify).to.equal("operations");
+      });
+      test("the alert count covers it", function () {
+        expect(res.getBody().measured.counts.alerts).to.be.at.least(1);
+      });
+}
+
+docs {
+  ## What this proves
+  The alert row itself. The failed run from `B1` wrote one row to `observability.pipeline_event` with
+  `status = 'failed'` and `metrics.alert = true`; this request returns it with its severity and error
+  summary, matched by the run id this folder generated. This is the row Operations would be paged from.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date_chaos`, `interval_end_date_chaos` from `B6`, `B7`
+  - `chaos_dag_run_id` from `B1`
+  - `chaos_rows_rejected` from `B5`
+
+  ## When it fails
+  No row for the run: the failure hook did not record the alert; `B4` shows the task log. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

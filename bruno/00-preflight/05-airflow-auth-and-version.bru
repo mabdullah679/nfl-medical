@@ -1,0 +1,48 @@
+meta {
+  name: 05 Airflow auth and version
+  type: http
+  seq: 5
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/version
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("airflow_version", res.getBody().version);
+  }
+}
+
+tests {
+  test("basic auth accepted (HTTP 200, not 401)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("version is reported", function () {
+    expect(res.getBody().version).to.match(/^\d+\.\d+\.\d+/);
+  });
+}
+
+docs {
+  ## What this proves
+  The Airflow REST API accepts `airflow_user` / `airflow_password`. Every Airflow request in the collection uses the same credential.
+
+  ## Captures
+  - `airflow_version`
+
+  ## Consumes
+  - `airflow_user`, `airflow_password` (environment; the password is a secret and is never stored in the collection)
+
+  ## When it fails
+  401: the secret `airflow_password` is empty or wrong. Desktop: Environments > local > fill the secret. CLI: `--env-var airflow_password=...`.
+}

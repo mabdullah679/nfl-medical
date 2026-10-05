@@ -1,0 +1,57 @@
+meta {
+  name: 02 List DAGs
+  type: http
+  seq: 2
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags?dag_id_pattern=nfl_
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const dags = (res.getBody() && res.getBody().dags) || [];
+  const dag = dags.find(d => d.dag_id === "nfl_ingestion");
+  if (dag) {
+    bru.setVar("ingestion_dag_id", dag.dag_id);
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the three pipeline DAGs are loaded", function () {
+    expect(res.getBody().dags.map(d => d.dag_id)).to.include.members(["nfl_ingestion", "nfl_extraction", "nfl_reporting"]);
+  });
+  test("none of them is paused (a paused DAG never starts a triggered run)", function () {
+    const paused = res.getBody().dags.filter(d => d.dag_id.startsWith("nfl_") && d.is_paused).map(d => d.dag_id);
+    expect(paused, paused.join(", ")).to.have.lengthOf(0);
+  });
+  test("nfl_ingestion was captured", function () {
+    expect(bru.getVar("ingestion_dag_id")).to.equal("nfl_ingestion");
+  });
+}
+
+docs {
+  ## What this proves
+  The three pipeline DAGs exist and are unpaused.
+
+  ## Captures
+  - `ingestion_dag_id`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  A DAG missing from the list: `00-preflight/06 Airflow DAG import errors`. Paused: PATCH the DAG with `{"is_paused": false}`.
+}

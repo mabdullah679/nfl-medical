@@ -1,0 +1,62 @@
+meta {
+  name: 63 F4 Shim events show the alert row with no interval
+  type: http
+  seq: 63
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/events?unscoped=true&alerts_only=true&limit=200
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+      test("the failed run wrote exactly one alert row, with NULL interval bounds", function () {
+        const mine = res.getBody().measured.events.filter(e => e.run_id === bru.getVar("chaos_badconf_dag_run_id"));
+        expect(mine.length).to.equal(1);
+        expect(mine[0].interval_start).to.equal(null);
+        expect(mine[0].interval_end).to.equal(null);
+        expect(mine[0].status).to.equal("failed");
+        expect(mine[0].step).to.equal("validate_conf");
+      });
+      test("the row is an Operations alert with a severity and an error summary naming the missing field", function () {
+        const row = res.getBody().measured.events.find(e => e.run_id === bru.getVar("chaos_badconf_dag_run_id"));
+        expect(row.alert).to.equal(true);
+        expect(row.severity).to.equal("critical");
+        expect(row.error_summary).to.include("interval_start is required");
+        expect(row.metrics.interval_derivable).to.equal(false);
+        expect(row.metrics.raw_conf).to.deep.equal({});
+      });
+      test("every row in the unscoped view has no interval", function () {
+        const scoped = res.getBody().measured.events.filter(e => e.interval_start !== null || e.interval_end !== null);
+        expect(scoped).to.have.lengthOf(0);
+        expect(res.getBody().params.unscoped).to.equal(true);
+      });
+}
+
+docs {
+  ## What this proves
+  A failure with no interval still alerts. The run from `F1` wrote one row to `observability.pipeline_event`
+  with `status = 'failed'`, `metrics.alert = true`, a severity, an error summary and NULL `interval_start` /
+  `interval_end`, plus the raw conf it was given. No interval filter can match such a row; `unscoped=true`
+  is the view that returns them.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_badconf_dag_run_id` from `F1`
+
+  ## When it fails
+  No row for the run: the alert was lost (the task log would say `OPERATIONS ALERT COULD NOT BE RECORDED`). HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

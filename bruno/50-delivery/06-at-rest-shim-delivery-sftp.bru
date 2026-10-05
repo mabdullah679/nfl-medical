@@ -1,0 +1,68 @@
+meta {
+  name: 06 AT REST Shim delivery SFTP
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{shim_url}}/checks/delivery/sftp?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}&report={{delivery_report_name}}
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const m = (res.getBody() && res.getBody().measured) || {};
+  bru.setVar("at_rest_mtime", m.delivered_mtime);
+  bru.setVar("at_rest_sha256", m.delivered_sha256);
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+
+      test("the check ran for the captured interval", function () {
+        expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+        expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+      });
+
+      test("the file is under its final name with no temp file left", function () {
+        expect(res.getBody().measured.final_name_present).to.equal(true);
+        expect(res.getBody().measured.temp_name_present).to.equal(false);
+        expect(res.getBody().measured.leftover_partial_names).to.have.lengthOf(0);
+      });
+      test("the shim verified the pinned SSH host key", function () {
+        expect(res.getBody().measured.host_key_verified).to.equal(true);
+      });
+      test("bytes on SFTP match the S3 source report", function () {
+        expect(res.getBody().measured.checksum_matches_source).to.equal(true);
+        expect(res.getBody().measured.size_matches_source).to.equal(true);
+      });
+}
+
+docs {
+  ## What this proves
+  AT REST: the report is on the SFTP server under its final name, byte-identical to the S3 source, before
+  this folder delivers anything. Non-HTTP made sendable: the shim logs in with a key-only read-only account,
+  verifies the pinned host key, reads the file back and hashes it. Its modification time is captured so
+  request 19 can show the forced delivery really replaced the file.
+
+  ## Captures
+  - `at_rest_mtime`
+  - `at_rest_sha256`
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from `03`, `04`
+  - `delivery_report_name` from `02`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

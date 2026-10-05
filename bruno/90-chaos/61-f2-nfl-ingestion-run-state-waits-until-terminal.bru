@@ -1,0 +1,61 @@
+meta {
+  name: 61 F2 nfl_ingestion run state (waits until terminal)
+  type: http
+  seq: 61
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{chaos_badconf_dag_run_id}}
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForDagRun(bru, "nfl_ingestion", bru.getVar("chaos_badconf_dag_run_id"));
+  bru.setVar("chaos_badconf_poll_count", result.polls);
+  bru.setVar("chaos_badconf_poll_waited_ms", result.waitedMs);
+}
+
+script:post-response {
+  bru.setVar("chaos_badconf_run_state", res.getBody().state);
+}
+
+tests {
+  test("HTTP 200 for the run this folder triggered", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().dag_run_id).to.equal(bru.getVar("chaos_badconf_dag_run_id"));
+  });
+  test("the run reached a terminal state inside poll_timeout_seconds", function () {
+    expect(["success", "failed"], "still " + res.getBody().state + " after " + bru.getVar("chaos_badconf_poll_waited_ms") + " ms").to.include(res.getBody().state);
+  });
+  test("the run ended in failed", function () {
+    expect(res.getBody().state).to.equal("failed");
+  });
+}
+
+docs {
+  ## What this proves
+  The run with the empty conf ended in `failed`.
+
+  ## Captures
+  - `chaos_badconf_run_state`
+  - `chaos_badconf_poll_count`
+  - `chaos_badconf_poll_waited_ms`
+
+  ## Consumes
+  - `chaos_badconf_dag_run_id` from the trigger request before this one
+  - `poll_timeout_seconds`, `poll_interval_ms` (environment)
+
+  ## When it fails
+  State `success`: `validate_conf` accepted a conf with no interval.
+}

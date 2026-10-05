@@ -1,0 +1,22 @@
+endpoint: /checks
+check: index
+summary: Self-describing index of every check, its parameters, and the role it runs as.
+identity:
+  kind: none
+  name: unauthenticated
+  scope: >
+    Serves the role declarations themselves. Holds no backing-store credential and
+    performs no backing-store access.
+credential_env: null
+credential_env_rationale: >
+  Null by design. The index reads only files already on disk in shim/roles/.
+dependencies: []
+grants: []
+grants_rationale: >
+  Reading its own declaration files needs no grant.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement: []
+production_notes: >
+  Response redacts credential VALUES and publishes only env var NAMES, so the index is
+  safe to expose. See redaction in shim/roles.py.

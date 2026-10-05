@@ -1,0 +1,62 @@
+meta {
+  name: 13 Shim ingestion quality
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{shim_url}}/checks/ingestion/quality?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}&layer=utm
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("the check ran for the captured interval", function () {
+    expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+    expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+  });
+
+  test("all three tables were checked; rows exist and none has a null or duplicated business key", function () {
+    const m = res.getBody().measured;
+    expect(m.tables_checked).to.have.members(["patient_account", "account_transaction", "payment"]);
+    expect(m.tables_failed, JSON.stringify(m.tables_failed)).to.have.lengthOf(0);
+    expect(m.rows_in_interval).to.be.above(0);
+    expect(m.null_business_keys).to.equal(0);
+    expect(m.duplicate_business_key_groups).to.equal(0);
+  });
+  test("the interval's ingestion batch SUCCEEDED with nothing rejected", function () {
+    const b = res.getBody().measured.ingestion_batch;
+    expect(b.recorded).to.equal(true);
+    expect(b.status).to.equal("SUCCEEDED");
+    expect(b.rows_rejected).to.equal(0);
+    expect(res.getBody().measured.rejected_rows).to.equal(0);
+    expect(b.rows_loaded).to.equal(res.getBody().measured.rows_in_interval);
+  });
+}
+
+docs {
+  ## What this proves
+  The utm layer for the interval has rows, no null business key and no duplicated business key in any of the
+  three tables, AND the interval's row in `utm.ingestion_batch` is SUCCEEDED with zero rejects. A FAILED batch
+  or any reject makes the verdict red whatever the surviving rows look like (`90-chaos` B10 shows that for
+  the chaos interval). Change `layer=utm` to `layer=staging` to run the key rules on the raw CDC rows.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from the two `XCom validate_conf.interval_*_date` requests in this folder
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

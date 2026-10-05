@@ -1,0 +1,81 @@
+meta {
+  name: 51 E2 INJECT DMS StopReplicationTask
+  type: http
+  seq: 51
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.StopReplicationTask
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {
+    "ReplicationTaskArn": "{{chaos_dms_task_arn}}"
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the response has the AWS DMS shape: one ReplicationTask object, not a list", function () {
+    expect(res.getBody().ReplicationTask, "AWS StopReplicationTask returns a single ReplicationTask object").to.be.an("object");
+    expect(res.getBody().ReplicationTasks).to.equal(undefined);
+    expect(res.getBody().ReplicationTask.ReplicationTaskArn).to.equal(bru.getVar("chaos_dms_task_arn"));
+  });
+  test("Status still reflects the measured connector: running, with no stop reason", function () {
+    const task = res.getBody().ReplicationTask;
+    expect(task._stub_upstream.kafka_connect.connector_state).to.equal("RUNNING");
+    expect(task.Status).to.equal("running");
+    expect(task.StopReason).to.equal(null);
+  });
+  test("the Stop command is recorded as intent only", function () {
+    expect(res.getBody().ReplicationTask._stub_intent.last_command).to.equal("StopReplicationTask");
+  });
+  test("the stub says plainly that it stopped nothing real", function () {
+    expect(res.getBody()._stub).to.equal(true);
+    expect(res.getBody()._stub_action).to.be.a("string").and.not.equal("");
+  });
+}
+
+docs {
+  ## What this proves
+  STATE-CHANGING on the stub only: it records that a Stop command arrived. It has no authority over Kafka
+  Connect, so Debezium keeps running, and the response says so: `Status` stays `running` because it is
+  derived from the connector state Kafka Connect reports, `StopReason` is null, and the command appears
+  only in `_stub_intent` and `_stub_action`. A stub that answered `stopped` here would be reporting an
+  operator's wish as a measurement. The matching restore of the recorded intent is `E4`. Tagged
+  `local-only`: against real AWS this request really stops replication.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_dms_task_arn` from `E1`
+
+  ## When it fails
+  400 with no `X-Amz-Target`: the header was edited away. 404 `UnknownOperationException`: the operation name is
+  wrong. On the local stub read `_provenance` beside each field: `measured` was read from a live system,
+  `derived` was computed from a measured value by the rule in `_provenance_detail`, `unknown` is null on
+  purpose. On real AWS a 400 `AccessDeniedException` names the missing `dms:` permission.
+}

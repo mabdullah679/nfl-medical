@@ -1,0 +1,45 @@
+meta {
+  name: 17 B8 Staging quality check is red for the chaos interval
+  type: http
+  seq: 17
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/ingestion/quality?interval_start={{interval_start_date_chaos}}&interval_end={{interval_end_date_chaos}}&layer=staging
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is fail", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(false);
+    expect(res.getBody().state).to.equal("fail");
+  });
+  test("the check found the bad keys in the raw rows", function () {
+    const m = res.getBody().measured;
+    expect(m.null_business_keys + m.duplicate_business_key_groups).to.be.above(0);
+  });
+}
+
+docs {
+  ## What this proves
+  Independent of the DAG: the quality rule run directly on the staging rows of the chaos interval finds the null and duplicated business keys that made the gate fail.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date_chaos`, `interval_end_date_chaos` from `B6`, `B7`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

@@ -1,0 +1,61 @@
+meta {
+  name: 45 D16 nfl_reporting restore run state (waits until terminal)
+  type: http
+  seq: 45
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{chaos_restore_dag_run_id}}
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForDagRun(bru, "nfl_reporting", bru.getVar("chaos_restore_dag_run_id"));
+  bru.setVar("chaos_restore_poll_count", result.polls);
+  bru.setVar("chaos_restore_poll_waited_ms", result.waitedMs);
+}
+
+script:post-response {
+  bru.setVar("chaos_restore_run_state", res.getBody().state);
+}
+
+tests {
+  test("HTTP 200 for the run this folder triggered", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().dag_run_id).to.equal(bru.getVar("chaos_restore_dag_run_id"));
+  });
+  test("the run reached a terminal state inside poll_timeout_seconds", function () {
+    expect(["success", "failed"], "still " + res.getBody().state + " after " + bru.getVar("chaos_restore_poll_waited_ms") + " ms").to.include(res.getBody().state);
+  });
+  test("the run ended in success", function () {
+    expect(res.getBody().state).to.equal("success");
+  });
+}
+
+docs {
+  ## What this proves
+  The restore run finished in `success`: with the marker back, the same pre-check passes and reporting completes.
+
+  ## Captures
+  - `chaos_restore_run_state`
+  - `chaos_restore_poll_count`
+  - `chaos_restore_poll_waited_ms`
+
+  ## Consumes
+  - `chaos_restore_dag_run_id` from the trigger request before this one
+  - `poll_timeout_seconds`, `poll_interval_ms` (environment)
+
+  ## When it fails
+  State `failed`: the marker is still missing (`D13`) or another step broke; read the run's task instances in Airflow.
+}

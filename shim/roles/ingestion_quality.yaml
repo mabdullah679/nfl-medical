@@ -1,0 +1,61 @@
+endpoint: /checks/ingestion/quality
+check: ingestion.quality
+summary: Null and duplicate business keys in all three tables of a layer for one interval, plus the ingestion batch status and its rejects.
+identity:
+  kind: postgres_role
+  name: nfl_check_quality
+  scope: >
+    NFL Postgres as the dedicated read-only role nfl_check_quality. This endpoint
+    returns business-key VALUES (duplicated keys and rejected keys) in its response
+    body, a higher exposure class than a count, which is why it has its own column-
+    scoped role. It cannot read utm.ingestion_reject.raw_row, which holds whole rejected
+    source rows.
+credential_env: SHIM_INGESTION_QUALITY_PG_DSN
+dependencies:
+  - nfl_postgres
+grants:
+  - "CREATE ROLE nfl_check_quality LOGIN PASSWORD '<secret>';"
+  - "GRANT CONNECT ON DATABASE nfl TO nfl_check_quality;"
+  - "GRANT USAGE ON SCHEMA staging, utm TO nfl_check_quality;"
+  - "ALTER ROLE nfl_check_quality SET default_transaction_read_only = on;"
+  - "GRANT SELECT (account_number, opened_at) ON utm.dim_patient_account TO nfl_check_quality;"
+  - "GRANT SELECT (transaction_ref, posted_at) ON utm.fact_account_transaction TO nfl_check_quality;"
+  - "GRANT SELECT (payment_ref, received_at) ON utm.fact_payment TO nfl_check_quality;"
+  - "GRANT SELECT (account_id, account_number, opened_at, dms_loaded_at, updated_at) ON staging.patient_account TO nfl_check_quality;"
+  - "GRANT SELECT (transaction_id, transaction_ref, posted_at, dms_loaded_at, updated_at) ON staging.account_transaction TO nfl_check_quality;"
+  - "GRANT SELECT (payment_id, payment_ref, received_at, dms_loaded_at, updated_at) ON staging.payment TO nfl_check_quality;"
+  - "GRANT SELECT (batch_id, batch_key, window_start, window_end, status, rows_read, rows_loaded, rows_rejected, failure_reason, started_at, finished_at) ON utm.ingestion_batch TO nfl_check_quality;"
+  - "GRANT SELECT (reject_id, utm_batch_id, source_table, reject_reason, business_key) ON utm.ingestion_reject TO nfl_check_quality;"
+grants_rationale: >
+  Null and duplicate detection reads the business key and the event time of each table;
+  the staging layer additionally needs the source primary key and the version-ordering
+  columns to pick the newest CDC version. The batch verdict reads the batch row for the
+  exact window and counts its rejects by table and reason. raw_row is deliberately not
+  granted: the check reports which keys were rejected and why, never the rejected row
+  itself.
+local_enforcement: >
+  ENFORCED by Postgres when the DSN in $SHIM_INGESTION_QUALITY_PG_DSN logs in as nfl_check_quality with
+  exactly the grants above: the role authenticates with its own password, can SELECT
+  only the listed columns, and cannot write. The shim refuses to start if that DSN
+  carries any other user, or a user another endpoint also carries. NOT verified by the
+  shim: that the database holds no EXTRA grant for this role; that is the DDL's job
+  (infra/sql) and is audited with \dp, not by this service.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ConnectAsQualityRole
+      Effect: Allow
+      Action:
+        - rds-db:connect
+      Resource:
+        - arn:aws:rds-db:${AWS_REGION}:${AWS_ACCOUNT_ID}:dbuser:${NFL_PG_RESOURCE_ID}/nfl_check_quality
+    - Sid: ReadOwnSecret
+      Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:nfl/shim/ingestion-quality-*
+production_notes: >
+  Column-level grants are the control that makes this endpoint safe to expose. If the
+  response ever needs to widen beyond key columns, the grant list must widen first and
+  that change is visible in this file's diff.

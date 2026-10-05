@@ -1,0 +1,49 @@
+meta {
+  name: 43 D14 S3 HEAD restored marker
+  type: http
+  seq: 43
+  tags: [
+    chaos
+  ]
+}
+
+head {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{chaos_marker_key}}
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+script:pre-request {
+  const guards = require("./lib/guards.js");
+  guards.markerKey(bru);
+}
+
+tests {
+  test("HTTP 200 and zero bytes", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(Number(res.getHeader("content-length"))).to.equal(0);
+  });
+}
+
+docs {
+  ## What this proves
+  The same proof without the shim: a raw signed HEAD on the marker object.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_marker_key` from `D2`
+
+  ## When it fails
+  404: the restore did not happen; send `D12` again.
+}

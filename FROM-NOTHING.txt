@@ -1,0 +1,11 @@
+cd /Users/muhammadabdullah/Documents/Abdullah-Projects/nfl-medical
+Moves into the repo, because every command below is run from its root.
+
+curl -fsS http://localhost:4566/_localstack/health
+Confirms floci, the local AWS emulator the stack depends on but does not start, is answering on port 4566.
+
+scripts/init-env.sh
+Generates infra/nfl.env with 20 random secrets plus the SFTP host and checker keys, without printing any value and without any manual editing.
+
+scripts/up.sh
+Creates the S3 bucket if missing, builds and starts the 9 NFL containers, applies schemas, roles and grants, registers both Debezium connectors, and exits 0 only when every service is healthy and every check identity has authenticated.

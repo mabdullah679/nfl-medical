@@ -1,0 +1,53 @@
+meta {
+  name: 04 nfl_extraction task log
+  type: http
+  seq: 4
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns/{{extraction_dag_run_id}}/taskInstances/{{extraction_task_id}}/logs/{{extraction_try_number}}
+  body: none
+  auth: basic
+}
+
+headers {
+  Accept: text/plain
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 200 with log text", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(String(res.getBody()).length).to.be.above(0);
+  });
+
+    test("the log is the log of the publish task", function () {
+      expect(String(res.getBody())).to.include("task_id=publish");
+    });
+    test("publish finished without a traceback", function () {
+      expect(String(res.getBody())).to.not.include("Traceback (most recent call last)");
+    });
+}
+
+docs {
+  ## What this proves
+  The raw log of the publish step: the copy from the temp prefix, the manifest write and the `_SUCCESS` marker written last.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `extraction_dag_run_id` from `Trigger nfl_extraction`
+  - `extraction_task_id`, `extraction_try_number` from `nfl_extraction task instances`
+
+  ## When it fails
+  404: the try number does not exist (the task never started). An empty log usually means the task is
+  still queued. The traceback, if any, is in this response body.
+}

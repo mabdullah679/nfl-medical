@@ -1,0 +1,44 @@
+meta {
+  name: 08 DMS stub health
+  type: http
+  seq: 8
+  tags: [
+    local-only
+  ]
+}
+
+get {
+  url: {{dms_endpoint}}/health
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the stub labels itself synthetic", function () {
+    expect(res.getBody()._stub).to.equal(true);
+    expect(res.getHeader("x-nfl-stub")).to.equal("true");
+  });
+  test("the stub can reach the systems it measures", function () {
+    expect(res.getBody().healthy).to.equal(true);
+    expect(res.getBody().degraded).to.equal(false);
+  });
+}
+
+docs {
+  ## What this proves
+  The local DMS control-plane stub is up, says it is a stub, and can reach Kafka Connect and Postgres, the
+  two systems its answers are measured from. When `degraded` is true its derived fields are null, never
+  invented.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  `degraded: true`: `upstreams` in the body names what the stub cannot reach. Tagged `local-only`: real DMS has no /health.
+}

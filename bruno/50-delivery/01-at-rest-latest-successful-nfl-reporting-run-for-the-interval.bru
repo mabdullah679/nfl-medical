@@ -1,0 +1,58 @@
+meta {
+  name: 01 AT REST latest successful nfl_reporting run for the interval
+  type: http
+  seq: 1
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns?state=success&order_by=-execution_date&limit=50
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const runs = (res.getBody() && res.getBody().dag_runs) || [];
+  const want = [bru.getEnvVar("interval_start_ts"), bru.getEnvVar("interval_end_ts")];
+  const hit = runs.find(r => r.conf && r.conf.interval_start === want[0] && r.conf.interval_end === want[1]);
+  if (hit) {
+    bru.setVar("at_rest_dag_run_id", encodeURIComponent(hit.dag_run_id));
+    bru.setVar("at_rest_dag_run_id_raw", hit.dag_run_id);
+  } else {
+    bru.setVar("at_rest_dag_run_id", "");
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("a successful nfl_reporting run exists for the environment's interval and was captured", function () {
+    expect(bru.getVar("at_rest_dag_run_id"), "no successful run for this interval: run 40-reporting first").to.be.a("string").and.not.equal("");
+  });
+}
+
+docs {
+  ## What this proves
+  AT REST part (requests 01 to 06): what is on the SFTP server now, as left by the newest successful
+  `nfl_reporting` run for the interval (the run `40-reporting` just made). On a warm stack that run usually
+  SKIPPED delivery because the file was already there, so this part proves the file at rest, NOT that an
+  upload works. The upload itself is proven by requests 07 to 19.
+
+  ## Captures
+  - at_rest_dag_run_id (URL-encoded)
+  - `at_rest_dag_run_id_raw`
+
+  ## Consumes
+  - `interval_start_ts`, `interval_end_ts` (environment)
+
+  ## When it fails
+  No matching run: reporting has not succeeded for this interval yet. Run `40-reporting` first.
+}

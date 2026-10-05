@@ -1,0 +1,82 @@
+meta {
+  name: 60 F1 INJECT trigger nfl_ingestion with an empty conf
+  type: http
+  seq: 60
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+post {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+body:json {
+  {
+    "dag_run_id": "{{new_dag_run_id}}",
+    "conf": {}
+  }
+}
+
+script:pre-request {
+  const stamp = new Date().toISOString().replace(/[-:.]/g, "");
+  bru.setVar("new_dag_run_id", "bruno_chaos_badconf_" + stamp);
+  bru.setVar("chaos_badconf_dag_run_id", "");
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("chaos_badconf_dag_run_id", res.getBody().dag_run_id);
+  }
+}
+
+tests {
+  test("Airflow accepted the run (HTTP 200)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the run id Airflow stored is the one this request generated", function () {
+    expect(res.getBody().dag_run_id).to.equal(bru.getVar("new_dag_run_id"));
+    expect(bru.getVar("chaos_badconf_dag_run_id")).to.equal(res.getBody().dag_run_id);
+  });
+
+  test("the run carries an empty conf: no interval at all", function () {
+    expect(res.getBody().dag_id).to.equal("nfl_ingestion");
+    expect(res.getBody().conf).to.deep.equal({});
+  });
+  test("the run is queued or running, not already finished", function () {
+    expect(["queued", "running"]).to.include(res.getBody().state);
+  });
+}
+
+docs {
+  ## What this proves
+  STATE-CHANGING: starts an `nfl_ingestion` run with conf `{}`. Airflow accepts it; the DAG's first task,
+  `validate_conf`, must reject it. Nothing is loaded, so there is nothing to restore: the run touches no
+  interval. The question this scenario answers is whether a failure that has NO interval still raises an
+  Operations alert (it used to be lost, because the alert row needed interval bounds).
+
+  ## Captures
+  - `chaos_badconf_dag_run_id`
+  - new_dag_run_id (pre-request, used only by this request's body)
+
+  ## Consumes
+  - `airflow_user`, `airflow_password` (environment)
+
+  ## When it fails
+  401: `airflow_password` was not supplied (desktop: fill the secret in the environment; CLI: `--env-var`).
+  404: the DAG is not loaded, see `00-preflight/06 Airflow DAG import errors`.
+  409: a run with this id exists, Send again (the id is regenerated).
+  400: the conf was rejected by Airflow itself; the body's `detail` says why.
+}

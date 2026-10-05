@@ -1,0 +1,25 @@
+-- Least-privilege CDC account.
+--
+-- Debezium's MySQL connector needs exactly four privileges and no more:
+--   SELECT              - the initial consistent snapshot
+--   RELOAD              - FLUSH TABLES WITH READ LOCK during snapshot
+--   REPLICATION SLAVE   - read the binlog stream
+--   REPLICATION CLIENT  - SHOW MASTER STATUS / SHOW BINARY LOGS
+--
+-- RELOAD is global-only in MySQL (it cannot be scoped to a database), so it is
+-- granted at *.* while SELECT stays scoped to the hawks database.
+-- The AWS DMS equivalent source-endpoint user needs the same four.
+--
+-- Deliberately NOT granted: INSERT/UPDATE/DELETE, DDL, SUPER, LOCK TABLES,
+-- PROCESS, or any grant on mysql.*.
+
+CREATE USER IF NOT EXISTS 'debezium'@'%' IDENTIFIED WITH mysql_native_password BY 'CHANGEME_mysql_cdc';
+
+GRANT REPLICATION SLAVE, REPLICATION CLIENT, RELOAD ON *.* TO 'debezium'@'%';
+GRANT SELECT ON hawks.* TO 'debezium'@'%';
+
+-- Application account: owns source data, has no replication rights at all.
+CREATE USER IF NOT EXISTS 'hawks_app'@'%' IDENTIFIED WITH mysql_native_password BY 'CHANGEME_mysql_app';
+GRANT SELECT, INSERT, UPDATE, DELETE ON hawks.* TO 'hawks_app'@'%';
+
+FLUSH PRIVILEGES;

@@ -1,0 +1,53 @@
+meta {
+  name: 08 A8 Connector status check is green again
+  type: http
+  seq: 8
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/replication/connector-status
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForConnector(bru, bru.getVar("chaos_connector_name"), "RUNNING");
+  bru.setVar("chaos_connector_state_seen", result.state);
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("both connectors RUNNING, the source with a running task again", function () {
+    const m = res.getBody().measured;
+    expect(m.connector_state).to.equal("RUNNING");
+    expect(m.connectors.source.connector_state).to.equal("RUNNING");
+    expect(m.connectors.source.tasks_running).to.be.at.least(1);
+    expect(m.connectors.sink.connector_state).to.equal("RUNNING");
+    expect(m.connectors_unhealthy).to.have.lengthOf(0);
+  });
+}
+
+docs {
+  ## What this proves
+  The restore worked: the same check that went red is green again.
+
+  ## Captures
+  - `chaos_connector_state_seen`
+
+  ## Consumes
+  - `chaos_connector_name` from `A1`
+
+  ## When it fails
+  Still red: send `A7` again and check `10-replication/07` for a task trace.
+}

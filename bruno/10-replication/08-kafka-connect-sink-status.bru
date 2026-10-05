@@ -1,0 +1,41 @@
+meta {
+  name: 08 Kafka Connect sink status
+  type: http
+  seq: 8
+  tags: [
+    local-only
+  ]
+}
+
+get {
+  url: {{connect_url}}/connectors/{{sink_connector_name_live}}/status
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200 for the captured sink", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().type).to.equal("sink");
+  });
+  test("sink connector and all its tasks are RUNNING", function () {
+    expect(res.getBody().connector.state).to.equal("RUNNING");
+    const notRunning = res.getBody().tasks.filter(t => t.state !== "RUNNING");
+    expect(notRunning, JSON.stringify(notRunning)).to.have.lengthOf(0);
+    expect(res.getBody().tasks.length).to.be.at.least(1);
+  });
+}
+
+docs {
+  ## What this proves
+  The JDBC sink that writes staging is RUNNING. If the source is healthy and staging is stale, this is where to look.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `sink_connector_name_live` from `05 Kafka Connect list connectors`
+
+  ## When it fails
+  A FAILED sink task carries its `trace` here: usually a Postgres permission or a column mismatch.
+}

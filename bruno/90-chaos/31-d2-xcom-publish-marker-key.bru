@@ -1,0 +1,52 @@
+meta {
+  name: 31 D2 XCom publish.marker_key
+  type: http
+  seq: 31
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns/{{chaos_extraction_dag_run_id}}/taskInstances/publish/xcomEntries/marker_key?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("chaos_marker_key", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key marker_key", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("marker_key");
+  });
+  test("value has the expected shape and was captured as chaos_marker_key", function () {
+    expect(res.getBody().value).to.match(/^[A-Za-z0-9_.\-]+\/_SUCCESS$/);
+    expect(bru.getVar("chaos_marker_key")).to.deep.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `publish` published under `marker_key`: the S3 key of the `_SUCCESS` marker to remove and restore.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `chaos_marker_key`
+
+  ## Consumes
+  - `chaos_extraction_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `marker_key` (it failed or was skipped before that point). Used by: `D5`, `D6`, `D7`, `D11` to `D14`.
+}

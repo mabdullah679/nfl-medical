@@ -1,0 +1,82 @@
+-- Least-privilege Postgres roles for the three pipeline writers/readers.
+-- The check, stub and event identities are in 06-check-identities.sql.tmpl.
+--
+-- Role            | staging                         | utm                                   | lifts to
+-- ----------------+---------------------------------+---------------------------------------+-------------------------
+-- nfl_replication | INSERT on the 4 landed tables   | none                                  | DMS target endpoint user
+-- nfl_hop         | SELECT on the 4 landed tables   | SELECT/INSERT/UPDATE on batch, dim,   | Hop ECS task role
+--                 |                                 | facts; SELECT/INSERT/DELETE on reject |
+-- nfl_spark       | none                            | SELECT on batch, dim, facts           | EMR/Glue job role
+--
+-- Every table is owned by the bootstrap superuser; no pipeline role owns or can
+-- create an object. Nothing is granted through ALL TABLES or default
+-- privileges: a new table is invisible to every role until it is named here.
+--
+-- Applied twice by design, both through 03-render-roles.sh: by the postgres
+-- entrypoint on an empty volume, and by scripts/up.sh on every start. The
+-- REVOKEs make an older, wider volume converge to exactly this file.
+-- The database name is fixed as "nfl" across compose, the connector config and
+-- this file; it is not a tunable.
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON DATABASE nfl FROM PUBLIC;
+-- Without these every login role can also open a session on the maintenance
+-- databases.
+REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
+REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
+
+DO $$
+DECLARE r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['nfl_replication', 'nfl_hop', 'nfl_spark'] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      EXECUTE format('CREATE ROLE %I LOGIN', r);
+    END IF;
+  END LOOP;
+END $$;
+
+ALTER ROLE nfl_replication PASSWORD 'CHANGEME_pg_repl';
+ALTER ROLE nfl_hop         PASSWORD 'CHANGEME_pg_hop';
+ALTER ROLE nfl_spark       PASSWORD 'CHANGEME_pg_spark';
+
+-- Start every role from nothing, then grant only what is named below.
+REVOKE ALL ON ALL TABLES    IN SCHEMA staging, utm FROM nfl_replication, nfl_hop, nfl_spark;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA staging, utm FROM nfl_replication, nfl_hop, nfl_spark;
+REVOKE ALL ON SCHEMA staging, utm FROM nfl_replication, nfl_hop, nfl_spark;
+ALTER DEFAULT PRIVILEGES IN SCHEMA staging REVOKE ALL ON TABLES    FROM nfl_replication, nfl_hop, nfl_spark;
+ALTER DEFAULT PRIVILEGES IN SCHEMA staging REVOKE ALL ON SEQUENCES FROM nfl_replication, nfl_hop, nfl_spark;
+ALTER DEFAULT PRIVILEGES IN SCHEMA utm     REVOKE ALL ON TABLES    FROM nfl_replication, nfl_hop, nfl_spark;
+ALTER DEFAULT PRIVILEGES IN SCHEMA utm     REVOKE ALL ON SEQUENCES FROM nfl_replication, nfl_hop, nfl_spark;
+
+-- 1. Replication writer (the JDBC sink). Insert-only: the sink runs
+--    insert.mode=insert, delete.enabled=false, schema.evolution=none, so it
+--    never reads, updates, deletes or creates.
+GRANT CONNECT ON DATABASE nfl TO nfl_replication;
+GRANT USAGE ON SCHEMA staging TO nfl_replication;
+GRANT INSERT ON staging.patient_account, staging.account_transaction,
+                staging.payment, staging.replication_heartbeat
+  TO nfl_replication;
+
+-- 2. Ingestion (Hop). Reads staging, writes utm. DELETE exists only on the
+--    reject table, which a re-run of a batch clears before reloading.
+GRANT CONNECT ON DATABASE nfl TO nfl_hop;
+GRANT USAGE ON SCHEMA staging, utm TO nfl_hop;
+GRANT SELECT ON staging.patient_account, staging.account_transaction,
+                staging.payment, staging.replication_heartbeat
+  TO nfl_hop;
+GRANT SELECT, INSERT, UPDATE
+  ON utm.ingestion_batch, utm.dim_patient_account,
+     utm.fact_account_transaction, utm.fact_payment
+  TO nfl_hop;
+GRANT SELECT, INSERT, DELETE ON utm.ingestion_reject TO nfl_hop;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA utm TO nfl_hop;
+
+-- 3. Extraction (Spark). Reads the modelled tables and the batch status. Not
+--    the reject table: raw_row holds whole rejected source rows.
+GRANT CONNECT ON DATABASE nfl TO nfl_spark;
+GRANT USAGE ON SCHEMA utm TO nfl_spark;
+GRANT SELECT
+  ON utm.ingestion_batch, utm.dim_patient_account,
+     utm.fact_account_transaction, utm.fact_payment
+  TO nfl_spark;
+ALTER ROLE nfl_spark SET default_transaction_read_only = on;

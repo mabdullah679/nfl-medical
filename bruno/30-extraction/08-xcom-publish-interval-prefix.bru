@@ -1,0 +1,51 @@
+meta {
+  name: 08 XCom publish.interval_prefix
+  type: http
+  seq: 8
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns/{{extraction_dag_run_id}}/taskInstances/publish/xcomEntries/interval_prefix?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("interval_prefix", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key interval_prefix", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("interval_prefix");
+  });
+  test("value has the expected shape and was captured as interval_prefix", function () {
+    expect(res.getBody().value).to.be.a("string").and.not.equal("");
+    expect(bru.getVar("interval_prefix")).to.deep.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `publish` published under `interval_prefix`: the S3 prefix all artifacts of the interval live under.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `interval_prefix`
+
+  ## Consumes
+  - `extraction_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `interval_prefix` (it failed or was skipped before that point). Used by: `13 S3 list interval prefix`, `14 S3 list temp prefix`.
+}

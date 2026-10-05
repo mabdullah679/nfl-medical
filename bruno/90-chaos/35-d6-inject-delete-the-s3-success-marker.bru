@@ -1,0 +1,61 @@
+meta {
+  name: 35 D6 INJECT delete the S3 _SUCCESS marker
+  type: http
+  seq: 35
+  tags: [
+    chaos
+  ]
+}
+
+delete {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{chaos_marker_key}}
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+script:pre-request {
+  const guards = require("./lib/guards.js");
+  guards.markerBaselineGreen(bru);
+}
+
+tests {
+  test("S3 deleted the object (HTTP 204)", function () {
+    expect(res.getStatus()).to.equal(204);
+  });
+  test("the request went to the guarded marker key", function () {
+    expect(req.getUrl().endsWith("/" + bru.getVar("chaos_marker_key"))).to.equal(true);
+    expect(bru.getVar("chaos_marker_key")).to.match(/\/_SUCCESS$/);
+  });
+}
+
+docs {
+  ## What this proves
+  DESTRUCTIVE: removes the marker the Reporting pre-check waits on, as if extraction had not completed. The
+  Parquet files and manifest are untouched. The matching restore is `D12 RESTORE put the S3 _SUCCESS marker
+  back`; send it even if a request in between fails.
+
+  Guarded. The pre-request script throws, and nothing is sent, unless `chaos_marker_key` is a captured
+  `<prefix>/_SUCCESS` key AND `D5` proved the marker check green for that same key in this pass. Without
+  the guard an uncaptured variable would be sent literally and S3 answers 204 for a key that never existed.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_marker_key` from `D2`
+  - `chaos_marker_baseline_ok`, `chaos_marker_baseline_key` from `D5`
+
+  ## When it fails
+  "refusing to touch S3" or "refusing to delete": the guard stopped it; send `D1` to `D5` first and read why
+  the baseline is not green. 403 on real AWS: the credential lacks `s3:DeleteObject`, which for a check
+  credential is correct.
+}

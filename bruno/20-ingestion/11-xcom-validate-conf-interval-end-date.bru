@@ -1,0 +1,51 @@
+meta {
+  name: 11 XCom validate_conf.interval_end_date
+  type: http
+  seq: 11
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{ingestion_dag_run_id}}/taskInstances/validate_conf/xcomEntries/interval_end_date?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("interval_end_date", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key interval_end_date", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("interval_end_date");
+  });
+  test("value has the expected shape and was captured as interval_end_date", function () {
+    expect(String(res.getBody().value)).to.match(/^\d{8}$/);
+    expect(bru.getVar("interval_end_date")).to.deep.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `validate_conf` published under `interval_end_date`: the inclusive last day of the interval as YYYYMMDD.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `interval_end_date`
+
+  ## Consumes
+  - `ingestion_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `interval_end_date` (it failed or was skipped before that point). Used by: every shim check in this folder.
+}

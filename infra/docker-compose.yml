@@ -1,0 +1,500 @@
+# NFL Data Platform - isolated local stack.
+#
+# Project name is "nfl" (set via COMPOSE_PROJECT_NAME in infra/nfl.env) so every
+# container, volume and network is namespaced away from the PAUSED avapuck
+# "pl-*" stack on this machine. Nothing here touches those ports or containers.
+#
+# floci (the local AWS emulator on :4566) is NOT defined here. It is already
+# running and externally managed; services reach it via host.docker.internal.
+#
+# Airflow metadata lives in its OWN postgres container (airflow-db), separate
+# from the pipeline database (postgres). Rationale: the orchestrator's state and
+# the data it orchestrates should not share a credential, a backup, or a blast
+# radius - and in AWS they would be different RDS instances anyway.
+
+name: nfl
+
+x-restart: &restart
+  restart: unless-stopped
+
+networks:
+  nfl:
+    name: nfl-net
+    driver: bridge
+
+volumes:
+  mysql-data:
+  postgres-data:
+  airflow-db-data:
+  kafka-data:
+  airflow-logs:
+  sftp-upload:
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Source system (Hawks side). Binlog enabled for real CDC.
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0.40
+    container_name: nfl-mysql
+    <<: *restart
+    command:
+      - --log-bin-trust-function-creators=1
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in infra/nfl.env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-hawks}
+      MYSQL_CDC_PASSWORD: ${MYSQL_CDC_PASSWORD:?set MYSQL_CDC_PASSWORD in infra/nfl.env}
+      MYSQL_APP_PASSWORD: ${MYSQL_APP_PASSWORD:?set MYSQL_APP_PASSWORD in infra/nfl.env}
+    ports:
+      - "127.0.0.1:${NFL_MYSQL_PORT:-3307}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/binlog.cnf:/etc/mysql/conf.d/binlog.cnf:ro
+      # Lexical order: schema, then rendered CDC/app users, then seed.
+      - ./mysql/init/01-source-schema.sql:/docker-entrypoint-initdb.d/01-source-schema.sql:ro
+      # 02-render-users.sh renders 02-debezium-user.sql.tmpl to a
+      # container-local temp file and applies it. All :ro - nothing writes back
+      # through a bind mount into the repo.
+      - ./mysql/init/02-render-users.sh:/docker-entrypoint-initdb.d/02-render-users.sh:ro
+      - ./mysql/init/02-debezium-user.sql.tmpl:/docker-entrypoint-initdb.d/02-debezium-user.sql.tmpl:ro
+      - ./sql/04-seed.sql:/docker-entrypoint-initdb.d/03-seed.sql:ro
+    healthcheck:
+      # mysqladmin ping returns success even when the server rejects the
+      # password, so the credential is passed to make this a real auth check.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # Replication target. Holds staging + utm, and the least-privilege roles.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: nfl-postgres
+    <<: *restart
+    environment:
+      # Fixed, not a tunable: the role SQL and the sink connector name it too.
+      POSTGRES_DB: nfl
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in infra/nfl.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/nfl.env}
+      PG_REPL_PASSWORD: ${PG_REPL_PASSWORD:?set PG_REPL_PASSWORD in infra/nfl.env}
+      PG_HOP_PASSWORD: ${PG_HOP_PASSWORD:?set PG_HOP_PASSWORD in infra/nfl.env}
+      PG_SPARK_PASSWORD: ${PG_SPARK_PASSWORD:?set PG_SPARK_PASSWORD in infra/nfl.env}
+    ports:
+      - "127.0.0.1:${NFL_POSTGRES_PORT:-5440}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Order: schemas first, then roles (the GRANTs reference their tables).
+      # 03-render-roles.sh renders 03-roles.sql.tmpl to a container-local temp
+      # file and applies it with psql. The template stays .tmpl so the
+      # entrypoint never executes the placeholder version, and everything here
+      # is :ro - nothing writes back through a bind mount into the repo.
+      # scripts/up.sh re-applies all three on every start (they are idempotent)
+      # and then adds 05-observability.sql and 06-check-identities.sql.tmpl.
+      - ./sql/01-staging-schema.sql:/docker-entrypoint-initdb.d/01-staging-schema.sql:ro
+      - ./sql/02-utm-schema.sql:/docker-entrypoint-initdb.d/02-utm-schema.sql:ro
+      - ./sql/03-render-roles.sh:/docker-entrypoint-initdb.d/03-render-roles.sh:ro
+      - ./sql/03-roles.sql.tmpl:/docker-entrypoint-initdb.d/03-roles.sql.tmpl:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # Kafka in KRaft mode (no ZooKeeper). Single node.
+  # Two listeners: PLAINTEXT:9092 for in-network clients (Connect), and
+  # EXTERNAL:9099 advertised as localhost for host-side tooling.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: nfl-kafka
+    <<: *restart
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@nfl-kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # CONTROLLER must appear in BOTH listeners and advertised.listeners, and
+      # in advertised it needs a routable host - the broker exits 1 at the
+      # storage-format step with "advertised.listeners cannot use the
+      # nonroutable meta-address 0.0.0.0" otherwise. Omitting CONTROLLER from
+      # advertised instead fails differently ("controller.listener.names must
+      # contain at least one value appearing in 'listeners'"). Both failure
+      # modes were reproduced against apache/kafka:3.9.0 before settling here.
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9099"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://nfl-kafka:9092,CONTROLLER://nfl-kafka:9093,EXTERNAL://localhost:${NFL_KAFKA_PORT:-9099}"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: nfl-cluster-00000000001
+    ports:
+      # Every published port in this file binds 127.0.0.1 only: Kafka Connect's
+      # REST API is unauthenticated and nothing here is meant for the LAN.
+      - "127.0.0.1:${NFL_KAFKA_PORT:-9099}:9099"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # Asks the broker for its own API versions over the in-network listener.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # Kafka Connect with Debezium. Replaces AWS DMS locally.
+  #
+  # debezium/connect:2.7.3.Final ships debezium-connector-mysql (source) AND
+  # debezium-connector-jdbc (sink) with postgresql-42.6.1.jar bundled - both
+  # verified present in the image, so no custom Dockerfile is required.
+  #
+  # Connector passwords are read from a file via Connect's FileConfigProvider
+  # rather than being inlined in the POSTed JSON, so credentials never sit in
+  # the connector configs in git. secrets/connect-secrets.properties is
+  # generated by scripts/up.sh from infra/nfl.env and is gitignored.
+  # ---------------------------------------------------------------------------
+  kafka-connect:
+    image: debezium/connect:2.7.3.Final
+    container_name: nfl-kafka-connect
+    <<: *restart
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: "nfl-kafka:9092"
+      GROUP_ID: "nfl-connect"
+      CONFIG_STORAGE_TOPIC: "nfl_connect_configs"
+      OFFSET_STORAGE_TOPIC: "nfl_connect_offsets"
+      STATUS_STORAGE_TOPIC: "nfl_connect_statuses"
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "nfl-kafka-connect"
+      CONNECT_CONFIG_PROVIDERS: "file"
+      CONNECT_CONFIG_PROVIDERS_FILE_CLASS: "org.apache.kafka.common.config.provider.FileConfigProvider"
+    ports:
+      - "127.0.0.1:${NFL_CONNECT_PORT:-8097}:8083"
+    volumes:
+      - ./secrets:/kafka/external-secrets:ro
+    healthcheck:
+      # /connectors answers only once the worker has joined the group and the
+      # herder is running; / answers earlier and would report ready too soon.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8083/connectors >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # Airflow metadata database. Deliberately separate from the pipeline db.
+  # ---------------------------------------------------------------------------
+  airflow-db:
+    image: postgres:16-alpine
+    container_name: nfl-airflow-db
+    <<: *restart
+    environment:
+      POSTGRES_DB: ${AIRFLOW_DB_NAME:-airflow}
+      POSTGRES_USER: ${AIRFLOW_DB_USER:?set AIRFLOW_DB_USER in infra/nfl.env}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?set AIRFLOW_DB_PASSWORD in infra/nfl.env}
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # Airflow. `airflow standalone` runs scheduler + webserver in one process and
+  # creates the admin user itself; we pin the admin credentials via
+  # _AIRFLOW_WWW_USER_* so Bruno has known creds.
+  #
+  # The REST API is explicitly set to basic_auth - the whole Bruno collection
+  # depends on it. Airflow 2.10 defaults to session auth, which Bruno cannot use.
+  # ---------------------------------------------------------------------------
+  airflow:
+    image: apache/airflow:2.10.4
+    container_name: nfl-airflow
+    <<: *restart
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@nfl-airflow-db:5432/${AIRFLOW_DB_NAME:-airflow}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in infra/nfl.env}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:?set AIRFLOW_SECRET_KEY in infra/nfl.env}
+      AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+      # "true" would return the Fernet key, the metadata-DB URL and the session
+      # secret to any API caller through GET /api/v1/config.
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "non-sensitive-only"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:?set AIRFLOW_ADMIN_USER in infra/nfl.env}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in infra/nfl.env}
+      _AIRFLOW_WWW_USER_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.invalid}
+      _AIRFLOW_WWW_USER_ROLE: Admin
+      # Pipeline-facing config the DAGs read.
+      NFL_POSTGRES_HOST: nfl-postgres
+      NFL_POSTGRES_DB: nfl
+      NFL_CONNECT_URL: "http://nfl-kafka-connect:8083"
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL_INTERNAL:-http://host.docker.internal:4566}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      NFL_S3_BUCKET: ${NFL_S3_BUCKET:-nfl-data-platform}
+      NFL_POSTGRES_PORT: "5432"
+      # One identity per stage. Each DAG reads only its own variables; there is
+      # no ambient AWS_ACCESS_KEY_ID and no admin database credential in this
+      # container. Locally the per-stage S3 key pairs default to the emulator's
+      # single key pair; in AWS each is a separate task role.
+      #   nfl_ingestion  -> NFL_PG_HOP_*    (SELECT staging, read/write utm)
+      #   nfl_extraction -> NFL_PG_SPARK_*  (SELECT utm), NFL_EXTRACTION_AWS_*
+      #   nfl_reporting  -> NFL_REPORTING_AWS_*, NFL_SFTP_*
+      #   all three      -> NFL_PG_EVENTS_* (INSERT observability.pipeline_event)
+      NFL_PG_HOP_USER: ${PG_HOP_USER:-nfl_hop}
+      NFL_PG_HOP_PASSWORD: ${PG_HOP_PASSWORD:?set PG_HOP_PASSWORD in infra/nfl.env}
+      NFL_PG_SPARK_USER: ${PG_SPARK_USER:-nfl_spark}
+      NFL_PG_SPARK_PASSWORD: ${PG_SPARK_PASSWORD:?set PG_SPARK_PASSWORD in infra/nfl.env}
+      NFL_PG_EVENTS_USER: ${PG_EVENTS_USER:-nfl_events}
+      NFL_PG_EVENTS_PASSWORD: ${PG_EVENTS_PASSWORD:?set PG_EVENTS_PASSWORD in infra/nfl.env}
+      NFL_EXTRACTION_AWS_ACCESS_KEY_ID: ${NFL_EXTRACTION_AWS_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-test}}
+      NFL_EXTRACTION_AWS_SECRET_ACCESS_KEY: ${NFL_EXTRACTION_AWS_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:-test}}
+      NFL_REPORTING_AWS_ACCESS_KEY_ID: ${NFL_REPORTING_AWS_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-test}}
+      NFL_REPORTING_AWS_SECRET_ACCESS_KEY: ${NFL_REPORTING_AWS_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:-test}}
+      NFL_SFTP_HOST: nfl-sftp
+      NFL_SFTP_PORT: "22"
+      NFL_SFTP_USER: ${SFTP_USER:-nfldelivery}
+      NFL_SFTP_PASSWORD: ${SFTP_PASSWORD:?set SFTP_PASSWORD in infra/nfl.env}
+      NFL_SFTP_RECIPIENT_DIR: /${SFTP_UPLOAD_DIR:-outbound}
+      NFL_SFTP_TEMP_SUFFIX: ".tmp"
+      NFL_SFTP_KNOWN_HOSTS: /opt/airflow/keys/sftp_known_hosts
+      NFL_INTERVAL_PREFIX_TEMPLATE: "df_{start}_{end}"
+      NFL_REPORTS_PREFIX: reports
+      NFL_GATE_RETRIES: ${NFL_GATE_RETRIES:-3}
+      NFL_GATE_RETRY_DELAY_SECONDS: ${NFL_GATE_RETRY_DELAY_SECONDS:-15}
+      NFL_STAGING_MAX_AGE_SECONDS: ${NFL_STAGING_MAX_AGE_SECONDS:-0}
+      # The ingestion pre_check fails, and alerts, when the newest end-to-end
+      # replication heartbeat is older than the limit OR when there is none.
+      NFL_REPLICATION_HEARTBEAT_REQUIRED: "true"
+      NFL_REPLICATION_HEARTBEAT_MAX_AGE_SECONDS: ${NFL_REPLICATION_HEARTBEAT_MAX_AGE_SECONDS:-300}
+    ports:
+      - "127.0.0.1:${NFL_AIRFLOW_PORT:-8095}:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow-logs:/opt/airflow/logs
+      - ./keys/sftp/known_hosts:/opt/airflow/keys/sftp_known_hosts:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # `airflow standalone` creates its OWN random-password "admin" user and
+    # IGNORES _AIRFLOW_WWW_USER_* (those are honoured only by the official
+    # entrypoint's db-init path), which leaves the REST API rejecting the
+    # credentials Bruno is configured with. So the admin user is created
+    # explicitly here, idempotently, before the scheduler and webserver start.
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        airflow db migrate
+        airflow users create \
+          --username "$${_AIRFLOW_WWW_USER_USERNAME}" \
+          --password "$${_AIRFLOW_WWW_USER_PASSWORD}" \
+          --firstname NFL --lastname Admin \
+          --role Admin --email "$${_AIRFLOW_WWW_USER_EMAIL}" 2>/dev/null \
+          || airflow users reset-password \
+               --username "$${_AIRFLOW_WWW_USER_USERNAME}" \
+               --password "$${_AIRFLOW_WWW_USER_PASSWORD}"
+        airflow scheduler & airflow triggerer &
+        exec airflow webserver
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # SFTP delivery target for stage 5. Two accounts:
+  #
+  #   ${SFTP_USER}            password login, read-write on its outbound dir.
+  #                           The delivery stage uploads as this.
+  #   ${SFTP_CHECK_USER}      key-only, read-only. The shim's delivery check
+  #                           logs in as this. Read-only is enforced twice:
+  #                           sshd_config forces `internal-sftp -R` for it, and
+  #                           the upload volume is mounted :ro under its chroot.
+  #
+  # atmoz/sftp's user spec is user:pass:uid:gid:dir. An empty password disables
+  # password login for that account. The entrypoint does NOT chown a dir that
+  # already exists, and a volume mount point always exists (root-owned on a new
+  # volume), so sftp/10-outbound-owner.sh is mounted into /etc/sftp.d, which
+  # the entrypoint runs on every start, to hand the upload dir to the delivery
+  # user.
+  #
+  # Host keys are generated by scripts/init-env.sh and mounted, instead of
+  # letting the entrypoint invent new ones per container. That is what allows
+  # clients to pin them (infra/keys/sftp/known_hosts) rather than trust
+  # whatever answers on the port.
+  # ---------------------------------------------------------------------------
+  sftp:
+    image: atmoz/sftp:alpine
+    container_name: nfl-sftp
+    <<: *restart
+    command:
+      - "${SFTP_USER:-nfldelivery}:${SFTP_PASSWORD:?set SFTP_PASSWORD in infra/nfl.env}:1001:1001:${SFTP_UPLOAD_DIR:-outbound}"
+      - "${SFTP_CHECK_USER:-nfl_check_delivery_sftp}::1002:1002"
+    environment:
+      SFTP_USER: ${SFTP_USER:-nfldelivery}
+      SFTP_UPLOAD_DIR: ${SFTP_UPLOAD_DIR:-outbound}
+    ports:
+      - "127.0.0.1:${NFL_SFTP_PORT:-2225}:22"
+    volumes:
+      - ./sftp/10-outbound-owner.sh:/etc/sftp.d/10-outbound-owner.sh:ro
+      - sftp-upload:/home/${SFTP_USER:-nfldelivery}/${SFTP_UPLOAD_DIR:-outbound}
+      - sftp-upload:/home/${SFTP_CHECK_USER:-nfl_check_delivery_sftp}/${SFTP_UPLOAD_DIR:-outbound}:ro
+      - ./sftp/sshd_config:/etc/ssh/sshd_config:ro
+      - ./keys/sftp/ssh_host_ed25519_key:/etc/ssh/ssh_host_ed25519_key:ro
+      - ./keys/sftp/ssh_host_rsa_key:/etc/ssh/ssh_host_rsa_key:ro
+      - ./keys/sftp/check_ed25519.pub:/home/${SFTP_CHECK_USER:-nfl_check_delivery_sftp}/.ssh/keys/check_ed25519.pub:ro
+    healthcheck:
+      # Reads the SSH banner off the listener, so a container whose sshd died or
+      # never bound the port is unhealthy rather than "pid exists".
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/22 && head -c 4 <&3 | grep -q SSH-"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # Check shim. Turns every non-HTTP pipeline check into an HTTP GET.
+  #
+  # One credential env var per endpoint (declared in shim/roles/*.yaml); the
+  # shim exits 78 at start if any is missing or if a Postgres DSN logs in as
+  # anything but the role that endpoint's YAML names. Each variable below
+  # carries only the identity that check needs:
+  #   Postgres checks   -> one role each: nfl_check_reconcile, _quality,
+  #                        _freshness, _lineage, _events (column-level grants,
+  #                        infra/sql/06-check-identities.sql.tmpl)
+  #   replication lag   -> nfl_check_replication_lag (MySQL REPLICATION CLIENT)
+  #   S3 checks         -> the emulator's single key pair (floci enforces no
+  #                        IAM, so these prove reachability, not an identity)
+  #   SFTP check        -> read-only key pair + pinned host keys
+  # No admin/superuser credential and no pipeline write role is passed in.
+  #
+  # depends_on is start-order only, deliberately without health conditions: the
+  # shim must stay up and answer 503 when a dependency is down - that is its job.
+  # ---------------------------------------------------------------------------
+  shim:
+    build:
+      context: ..
+      dockerfile: shim/Dockerfile
+    image: nfl-shim:local
+    container_name: nfl-shim
+    <<: *restart
+    depends_on: [postgres, mysql, kafka-connect, sftp]
+    environment:
+      SHIM_REPLICATION_LAG_MYSQL_DSN: "mysql://nfl_check_replication_lag:${MYSQL_LAG_CHECK_PASSWORD:?set MYSQL_LAG_CHECK_PASSWORD in infra/nfl.env}@nfl-mysql:3306/"
+      SHIM_REPLICATION_LAG_CONNECT_URL: "http://nfl-kafka-connect:8083"
+      SHIM_CONNECTOR_STATUS_CONNECT_URL: "http://nfl-kafka-connect:8083"
+      SHIM_INGESTION_RECONCILE_PG_DSN: "postgresql://nfl_check_reconcile:${PG_CHECK_RECONCILE_PASSWORD:?set PG_CHECK_RECONCILE_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
+      SHIM_INGESTION_QUALITY_PG_DSN: "postgresql://nfl_check_quality:${PG_CHECK_QUALITY_PASSWORD:?set PG_CHECK_QUALITY_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
+      SHIM_INGESTION_FRESHNESS_PG_DSN: "postgresql://nfl_check_freshness:${PG_CHECK_FRESHNESS_PASSWORD:?set PG_CHECK_FRESHNESS_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
+      SHIM_LINEAGE_PG_DSN: "postgresql://nfl_check_lineage:${PG_CHECK_LINEAGE_PASSWORD:?set PG_CHECK_LINEAGE_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
+      SHIM_EVENTS_PG_DSN: "postgresql://nfl_check_events:${PG_CHECK_EVENTS_PASSWORD:?set PG_CHECK_EVENTS_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
+      SHIM_EXTRACTION_MARKER_AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      SHIM_EXTRACTION_MARKER_AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      SHIM_EXTRACTION_MANIFEST_AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      SHIM_EXTRACTION_MANIFEST_AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      SHIM_EXTRACTION_ROWCOUNT_AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      SHIM_EXTRACTION_ROWCOUNT_AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      SHIM_REPORTING_FILE_AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      SHIM_REPORTING_FILE_AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      SHIM_DELIVERY_SFTP_AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      SHIM_DELIVERY_SFTP_AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      SHIM_DELIVERY_SFTP_USER: ${SFTP_CHECK_USER:-nfl_check_delivery_sftp}
+      SHIM_DELIVERY_SFTP_PRIVATE_KEY_PATH: /run/shim-keys/check_ed25519
+      SHIM_DELIVERY_SFTP_HOST_KEY_PATH: /run/shim-keys/known_hosts
+      SHIM_DELIVERY_SFTP_HOST: nfl-sftp
+      SHIM_DELIVERY_SFTP_PORT: "22"
+      SHIM_DELIVERY_SFTP_RECIPIENT_DIR: /${SFTP_UPLOAD_DIR:-outbound}
+      SHIM_S3_ENDPOINT_URL: ${AWS_ENDPOINT_URL_INTERNAL:-http://host.docker.internal:4566}
+      SHIM_AWS_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      SHIM_S3_BUCKET: ${NFL_S3_BUCKET:-nfl-data-platform}
+      SHIM_PG_HOST: nfl-postgres
+      SHIM_PG_PORT: "5432"
+      SHIM_MYSQL_HOST: nfl-mysql
+      SHIM_MYSQL_PORT: "3306"
+    ports:
+      - "127.0.0.1:${NFL_SHIM_PORT:-8096}:8096"
+    volumes:
+      - ./keys/sftp/check_ed25519:/run/shim-keys/check_ed25519:ro
+      - ./keys/sftp/known_hosts:/run/shim-keys/known_hosts:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # /checks needs no backing store, so this reports the shim itself. /health
+      # answers 503 when a DEPENDENCY is down, which is not the shim being sick.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8096/checks', timeout=4).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # DMS control-plane STUB. Not AWS DMS; replicates nothing. Answers the DMS
+  # awsjson1.1 request shape (POST / + X-Amz-Target) with status measured from
+  # Kafka Connect and row counts measured from Postgres as nfl_stub_reader
+  # (SELECT on staging only). It holds no other credential.
+  # ---------------------------------------------------------------------------
+  dms-stub:
+    build:
+      context: ../stub
+    image: nfl-dms-stub:local
+    container_name: nfl-dms-stub
+    <<: *restart
+    depends_on: [postgres, kafka-connect]
+    environment:
+      NFL_CONNECT_URL: "http://nfl-kafka-connect:8083"
+      NFL_CONNECT_CONNECTOR: nfl-hawks-mysql-source
+      NFL_PG_HOST: nfl-postgres
+      NFL_PG_PORT: "5432"
+      NFL_PG_DB: nfl
+      NFL_PG_USER: ${PG_STUB_USER:-nfl_stub_reader}
+      NFL_PG_PASSWORD: ${PG_STUB_PASSWORD:?set PG_STUB_PASSWORD in infra/nfl.env}
+      NFL_MYSQL_HOST: nfl-mysql
+      NFL_MYSQL_PORT: "3306"
+      NFL_DMS_REPLICATION_TASK_ARN: ${NFL_DMS_REPLICATION_TASK_ARN:-arn:aws:dms:us-east-1:000000000000:task:NFL-HAWKS-STAGING}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    ports:
+      - "127.0.0.1:${NFL_DMS_STUB_PORT:-8098}:8098"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8098/health', timeout=4).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [nfl]

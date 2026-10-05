@@ -1,0 +1,60 @@
+meta {
+  name: 13 S3 list interval prefix
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{s3_endpoint}}/{{s3_bucket}}?list-type=2&prefix={{interval_prefix}}/
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+script:post-response {
+  const keys = (String(res.getBody()).match(/<Key>[^<]+<\/Key>/g) || []).map(k => k.replace(/<\/?Key>/g, ""));
+  bru.setVar("s3_keys", keys);
+  const parquet = keys.find(k => k.endsWith(".parquet"));
+  if (parquet) {
+    bru.setVar("s3_first_parquet_key", parquet);
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the marker and manifest keys the DAG reported are really in the bucket", function () {
+    expect(bru.getVar("s3_keys")).to.include(bru.getVar("s3_marker_key"));
+    expect(bru.getVar("s3_keys")).to.include(bru.getVar("s3_manifest_key"));
+  });
+  test("silver and gold Parquet files are present", function () {
+    const keys = bru.getVar("s3_keys");
+    expect(keys.filter(k => k.includes("/silver/") && k.endsWith(".parquet")).length).to.be.at.least(1);
+    expect(keys.filter(k => k.includes("/gold/") && k.endsWith(".parquet")).length).to.be.at.least(1);
+  });
+}
+
+docs {
+  ## What this proves
+  Raw S3 ListObjectsV2 under the interval prefix (XML, signed with SigV4): the marker, the manifest and the Silver and Gold Parquet files exist where the DAG said it published them.
+
+  ## Captures
+  - `s3_keys`
+  - `s3_first_parquet_key`
+
+  ## Consumes
+  - `interval_prefix` from `08 XCom publish.interval_prefix`
+  - `s3_marker_key` from `06`, `s3_manifest_key` from `07`
+
+  ## When it fails
+  An empty list: wrong bucket or prefix, or the extraction never published. Compare with the XCom values captured above.
+}

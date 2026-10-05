@@ -1,0 +1,35 @@
+meta {
+  name: 07 A7 RESTORE resume the Debezium connector
+  type: http
+  seq: 7
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+put {
+  url: {{connect_url}}/connectors/{{chaos_connector_name}}/resume
+  body: none
+  auth: none
+}
+
+tests {
+  test("Kafka Connect accepted the resume (HTTP 202)", function () {
+    expect(res.getStatus()).to.equal(202);
+  });
+}
+
+docs {
+  ## What this proves
+  RESTORE for `A3`. Replication resumes from the committed binlog position; nothing is lost while paused.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_connector_name` from `A1`
+
+  ## When it fails
+  If this fails replication stays stopped. Send it again; do not leave the folder until `A8` is green.
+}

@@ -1,0 +1,66 @@
+meta {
+  name: 04 nfl_ingestion run state (waits until terminal)
+  type: http
+  seq: 4
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{ingestion_dag_run_id}}
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForDagRun(bru, "nfl_ingestion", bru.getVar("ingestion_dag_run_id"));
+  bru.setVar("ingestion_poll_count", result.polls);
+  bru.setVar("ingestion_poll_waited_ms", result.waitedMs);
+}
+
+script:post-response {
+  bru.setVar("ingestion_run_state", res.getBody().state);
+}
+
+tests {
+  test("HTTP 200 for the run this folder triggered", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().dag_run_id).to.equal(bru.getVar("ingestion_dag_run_id"));
+  });
+  test("the run reached a terminal state inside poll_timeout_seconds", function () {
+    expect(["success", "failed"], "still " + res.getBody().state + " after " + bru.getVar("ingestion_poll_waited_ms") + " ms").to.include(res.getBody().state);
+  });
+  test("the run ended in success", function () {
+    expect(res.getBody().state).to.equal("success");
+  });
+}
+
+docs {
+  ## What this proves
+  The `nfl_ingestion` run triggered by the previous request finished in state `success`.
+  The pre-request script polls the same Airflow endpoint every `poll_interval_ms` until the run is
+  `success` or `failed`, or until `poll_timeout_seconds` passes, and only then sends this request. So the
+  response you see is the terminal one. A run that is still going at the timeout FAILS the test; it is
+  never reported as a pass. In the desktop app the Send button simply takes longer; re-Send any time.
+
+  ## Captures
+  - `ingestion_run_state`
+  - `ingestion_poll_count`
+  - `ingestion_poll_waited_ms`
+
+  ## Consumes
+  - `ingestion_dag_run_id` from `Trigger nfl_ingestion`
+  - `poll_timeout_seconds`, `poll_interval_ms` (environment)
+
+  ## When it fails
+  State is not `success`: send `task instances` next to see which task ended in which state, then the
+  task log request. Timeout while `queued`: another run of this DAG is active (`max_active_runs=1`) or the
+  scheduler is down (`00-preflight/04 Airflow health`).
+}

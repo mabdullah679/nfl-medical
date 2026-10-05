@@ -1,0 +1,69 @@
+meta {
+  name: 39 D10 nfl_reporting task instances
+  type: http
+  seq: 39
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{chaos_marker_dag_run_id}}/taskInstances
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const tis = (res.getBody() && res.getBody().task_instances) || [];
+  const gate = tis.find(t => t.task_id === "wait_for_success_marker");
+  if (gate) {
+    bru.setVar("chaos_marker_try_number", gate.try_number);
+    bru.setVar("chaos_marker_max_tries", gate.max_tries);
+  }
+}
+
+tests {
+  test("HTTP 200 with task instances", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+  });
+  test("wait_for_success_marker is the one task that failed", function () {
+    const failed = res.getBody().task_instances.filter(t => t.state === "failed").map(t => t.task_id);
+    expect(failed).to.deep.equal(["wait_for_success_marker"]);
+  });
+  test("it retried before it gave up, and used every retry it has", function () {
+    const gate = res.getBody().task_instances.find(t => t.task_id === "wait_for_success_marker");
+    expect(gate.max_tries).to.be.at.least(1);
+    expect(gate.try_number).to.equal(gate.max_tries + 1);
+  });
+  test("nothing downstream ran: no report was built and nothing was delivered", function () {
+    const byId = {};
+    for (const t of res.getBody().task_instances) { byId[t.task_id] = t.state; }
+    for (const id of ["build_report", "is_process_failed", "deliver_sftp"]) {
+      expect(byId[id], id).to.equal("upstream_failed");
+    }
+  });
+}
+
+docs {
+  ## What this proves
+  The Reporting pre-check gated the run: `wait_for_success_marker` used all of its retries (`try_number`
+  equals `max_tries + 1`) and failed; `build_report`, `is_process_failed` and `deliver_sftp` are
+  `upstream_failed`, so no report was built from unpublished data and nothing reached SFTP.
+
+  ## Captures
+  - `chaos_marker_try_number`
+  - `chaos_marker_max_tries`
+
+  ## Consumes
+  - `chaos_marker_dag_run_id` from `D8`
+
+  ## When it fails
+  `try_number` 1: the task has no retries configured, so a late marker would fail the run at once.
+}

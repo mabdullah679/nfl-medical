@@ -1,0 +1,62 @@
+meta {
+  name: 56 E7 A task ARN that does not exist is rejected
+  type: http
+  seq: 56
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.DescribeTableStatistics
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {
+    "ReplicationTaskArn": "{{chaos_dms_task_arn}}-DOES-NOT-EXIST"
+  }
+}
+
+tests {
+  test("HTTP 400 ResourceNotFoundFault, not another task's data", function () {
+    expect(res.getStatus()).to.equal(400);
+    expect(String(res.getBody().__type)).to.include("ResourceNotFoundFault");
+    expect(res.getBody().TableStatistics).to.equal(undefined);
+  });
+  test("the fault is carried in the AWS error header and labelled synthetic", function () {
+    expect(String(res.getHeader("x-amzn-errortype"))).to.include("ResourceNotFoundFault");
+    expect(res.getHeader("x-nfl-stub")).to.equal("true");
+  });
+}
+
+docs {
+  ## What this proves
+  NEGATIVE test. Asking for the statistics of a task that does not exist returns a 400
+  `ResourceNotFoundFault`. The stub used to ignore the ARN and answer 200 with the real task's numbers.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_dms_task_arn` from `E1` (a suffix is appended to make it unknown)
+
+  ## When it fails
+  HTTP 200: the stub is ignoring the ARN in the request.
+}

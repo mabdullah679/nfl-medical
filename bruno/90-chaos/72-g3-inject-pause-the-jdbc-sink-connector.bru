@@ -1,0 +1,43 @@
+meta {
+  name: 72 G3 INJECT pause the JDBC sink connector
+  type: http
+  seq: 72
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+put {
+  url: {{connect_url}}/connectors/{{chaos_sink_connector_name}}/pause
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  if (bru.getVar("chaos_sink_connector_name") !== bru.getEnvVar("sink_connector_name")) {
+    throw new Error("no sink connector captured: send G1 first");
+  }
+}
+
+tests {
+  test("Kafka Connect accepted the pause (HTTP 202)", function () {
+    expect(res.getStatus()).to.equal(202);
+  });
+}
+
+docs {
+  ## What this proves
+  DESTRUCTIVE: pauses the JDBC sink, so change events keep reaching Kafka but nothing lands in staging. Rows
+  are not lost; they wait in Kafka and land after the resume. The matching restore is `G6 RESTORE resume
+  the JDBC sink connector`; send it even if a request in between fails.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_sink_connector_name` from `G1`
+
+  ## When it fails
+  404: the connector name is wrong; send `G1`.
+}

@@ -1,0 +1,51 @@
+meta {
+  name: 02 AT REST XCom validate_conf.report_name
+  type: http
+  seq: 2
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{at_rest_dag_run_id}}/taskInstances/validate_conf/xcomEntries/report_name?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("delivery_report_name", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key report_name", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("report_name");
+  });
+  test("value has the expected shape and was captured as delivery_report_name", function () {
+    expect(res.getBody().value).to.be.a("string").and.not.equal("");
+    expect(bru.getVar("delivery_report_name")).to.deep.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `validate_conf` published under `report_name`: the report file name for the interval.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `delivery_report_name`
+
+  ## Consumes
+  - `at_rest_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `report_name` (it failed or was skipped before that point). Used by: `06` and `19`.
+}

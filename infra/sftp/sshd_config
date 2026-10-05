@@ -1,0 +1,25 @@
+# Replaces the atmoz/sftp image default (same base settings) to add the
+# read-only, key-only checker account used by the shim's /checks/delivery/sftp.
+
+Protocol 2
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+UseDNS no
+
+PermitRootLogin no
+X11Forwarding no
+AllowTcpForwarding no
+
+Subsystem sftp internal-sftp
+ForceCommand internal-sftp
+ChrootDirectory %h
+
+# The checker proves a delivery happened; it must never be able to alter one.
+# -R makes the SFTP subsystem itself refuse every write, rename and delete, and
+# password login is off so only the mounted public key authenticates it.
+Match User nfl_check_delivery_sftp
+    ForceCommand internal-sftp -R
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthenticationMethods publickey

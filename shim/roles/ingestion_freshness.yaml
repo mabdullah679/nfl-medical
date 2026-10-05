@@ -1,0 +1,55 @@
+endpoint: /checks/ingestion/freshness
+check: ingestion.freshness
+summary: Age of the newest replication heartbeat landed in staging (end-to-end staleness) and of the newest utm load.
+identity:
+  kind: postgres_role
+  name: nfl_check_freshness
+  scope: >
+    NFL Postgres as the dedicated read-only role nfl_check_freshness. Reads one load-
+    timestamp column per table and the heartbeat timestamp; returns no row data.
+credential_env: SHIM_INGESTION_FRESHNESS_PG_DSN
+dependencies:
+  - nfl_postgres
+grants:
+  - "CREATE ROLE nfl_check_freshness LOGIN PASSWORD '<secret>';"
+  - "GRANT CONNECT ON DATABASE nfl TO nfl_check_freshness;"
+  - "GRANT USAGE ON SCHEMA staging, utm TO nfl_check_freshness;"
+  - "ALTER ROLE nfl_check_freshness SET default_transaction_read_only = on;"
+  - "GRANT SELECT (dms_loaded_at) ON staging.patient_account TO nfl_check_freshness;"
+  - "GRANT SELECT (dms_loaded_at) ON staging.account_transaction TO nfl_check_freshness;"
+  - "GRANT SELECT (dms_loaded_at) ON staging.payment TO nfl_check_freshness;"
+  - "GRANT SELECT (utm_loaded_at) ON utm.dim_patient_account TO nfl_check_freshness;"
+  - "GRANT SELECT (utm_loaded_at) ON utm.fact_account_transaction TO nfl_check_freshness;"
+  - "GRANT SELECT (utm_loaded_at) ON utm.fact_payment TO nfl_check_freshness;"
+  - "GRANT SELECT (source_name, beat_at) ON staging.replication_heartbeat TO nfl_check_freshness;"
+grants_rationale: >
+  MAX over a load-timestamp column needs that column only. The heartbeat grant is
+  source_name and beat_at, because each source's newest beat is judged separately. If
+  the heartbeat table is ever dropped and recreated (for example by a sink connector
+  with auto.create), these column grants are lost with it and must be re-applied,
+  otherwise the check answers 503 'lacks a required grant'.
+local_enforcement: >
+  ENFORCED by Postgres when the DSN in $SHIM_INGESTION_FRESHNESS_PG_DSN logs in as nfl_check_freshness with
+  exactly the grants above: the role authenticates with its own password, can SELECT
+  only the listed columns, and cannot write. The shim refuses to start if that DSN
+  carries any other user, or a user another endpoint also carries. NOT verified by the
+  shim: that the database holds no EXTRA grant for this role; that is the DDL's job
+  (infra/sql) and is audited with \dp, not by this service.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ConnectAsFreshnessRole
+      Effect: Allow
+      Action:
+        - rds-db:connect
+      Resource:
+        - arn:aws:rds-db:${AWS_REGION}:${AWS_ACCOUNT_ID}:dbuser:${NFL_PG_RESOURCE_ID}/nfl_check_freshness
+    - Sid: ReadOwnSecret
+      Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:nfl/shim/ingestion-freshness-*
+production_notes: >
+  Unchanged in production other than the secret source. Column-level grants are
+  supported identically on RDS Postgres.

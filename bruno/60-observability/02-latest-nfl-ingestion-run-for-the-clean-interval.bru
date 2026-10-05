@@ -1,0 +1,53 @@
+meta {
+  name: 02 Latest nfl_ingestion run for the clean interval
+  type: http
+  seq: 2
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns?order_by=-execution_date&limit=100
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const runs = (res.getBody() && res.getBody().dag_runs) || [];
+  const want = [bru.getEnvVar("interval_start_ts"), bru.getEnvVar("interval_end_ts")];
+  const mine = runs.filter(r => r.conf && r.conf.interval_start === want[0] && r.conf.interval_end === want[1]);
+  bru.setVar("ingestion_clean_latest_state", mine.length ? mine[0].state : "");
+}
+
+tests {
+  test("HTTP 200, newest first", function () {
+    expect(res.getStatus()).to.equal(200);
+    const dates = res.getBody().dag_runs.map(r => r.execution_date);
+    expect(dates).to.deep.equal(dates.slice().sort().reverse());
+  });
+  test("the newest nfl_ingestion run for the clean interval ended in success", function () {
+    expect(bru.getVar("ingestion_clean_latest_state"), "no run for this interval among the newest 100, or it is not success").to.equal("success");
+  });
+}
+
+docs {
+  ## What this proves
+  The run history of the ingestion stage, newest first, all states. Asserted: the newest run for the clean
+  interval (`interval_start_ts` / `interval_end_ts`) ended in `success`. Failed runs for other intervals
+  (the chaos interval, invalid conf) are expected after `90-chaos` and are not asserted on.
+
+  ## Captures
+  - `ingestion_clean_latest_state`
+
+  ## Consumes
+  - `interval_start_ts`, `interval_end_ts` (environment)
+
+  ## When it fails
+  State `failed`: send `20-ingestion` again and read its task log request. Empty: no run for this interval is among the newest 100.
+}

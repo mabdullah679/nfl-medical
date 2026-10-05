@@ -1,0 +1,53 @@
+meta {
+  name: 02 Shim check index
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{shim_url}}/checks
+  body: none
+  auth: none
+}
+
+script:post-response {
+  bru.setVar("shim_check_count", res.getBody().check_count);
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the index lists as many checks as it counts", function () {
+    expect(res.getBody().checks.length).to.equal(res.getBody().check_count);
+    expect(res.getBody().check_count).to.be.at.least(12);
+  });
+  test("every check names its role and what is enforced locally", function () {
+    const bad = res.getBody().checks.filter(c => !c.role || !c.local_enforcement).map(c => c.endpoint);
+    expect(bad, bad.join(", ")).to.have.lengthOf(0);
+  });
+  test("every shim endpoint this collection calls is registered", function () {
+    const have = res.getBody().checks.map(c => c.endpoint);
+    const need = ["/checks/replication/lag", "/checks/replication/connector-status", "/checks/ingestion/reconcile",
+      "/checks/ingestion/quality", "/checks/ingestion/freshness", "/checks/extraction/s3-marker",
+      "/checks/extraction/manifest", "/checks/extraction/parquet-rowcount", "/checks/reporting/file",
+      "/checks/delivery/sftp", "/checks/lineage", "/checks/events"];
+    expect(have).to.include.members(need);
+  });
+}
+
+docs {
+  ## What this proves
+  The shim's own catalogue: one entry per check with its parameters, its least-privilege role and a
+  `local_enforcement` statement of which grants the local stack really enforces. Also the response
+  contract: 200 = ran, 422 = bad parameters, 503 = could not run (never a pass).
+
+  ## Captures
+  - `shim_check_count`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  A missing endpoint means the shim image is older than this collection; rebuild with `scripts/up.sh`.
+}

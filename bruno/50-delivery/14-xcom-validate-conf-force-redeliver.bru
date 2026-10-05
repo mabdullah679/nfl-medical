@@ -1,0 +1,55 @@
+meta {
+  name: 14 XCom validate_conf.force_redeliver
+  type: http
+  seq: 14
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/validate_conf/xcomEntries/force_redeliver?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("delivery_force_redeliver", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key force_redeliver", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("force_redeliver");
+  });
+  test("value has the expected shape and was captured as delivery_force_redeliver", function () {
+    expect(res.getBody().value).to.be.a("boolean");
+    expect(bru.getVar("delivery_force_redeliver")).to.deep.equal(res.getBody().value);
+  });
+
+  test("the DAG read force_redeliver true from the conf", function () {
+    expect(res.getBody().value).to.equal(true);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `validate_conf` published under `force_redeliver`: the flag as the DAG understood it.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `delivery_force_redeliver`
+
+  ## Consumes
+  - `delivery_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `force_redeliver` (it failed or was skipped before that point).
+}

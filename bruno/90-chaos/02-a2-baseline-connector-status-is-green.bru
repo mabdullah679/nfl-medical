@@ -1,0 +1,39 @@
+meta {
+  name: 02 A2 Baseline connector status is green
+  type: http
+  seq: 2
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/replication/connector-status
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+}
+
+docs {
+  ## What this proves
+  Baseline before the injection: the check is green, so the red that follows is caused by the injection and nothing else.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Already red before injecting: fix replication first (`10-replication`), do not continue.
+}

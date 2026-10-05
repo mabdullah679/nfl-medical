@@ -1,0 +1,26 @@
+vars {
+  shim_url: http://localhost:8096
+  airflow_url: http://localhost:8095
+  airflow_user: nfladmin
+  connect_url: http://localhost:8097
+  dms_endpoint: http://localhost:8098
+  dms_is_stub: true
+  dms_task_identifier: NFL-HAWKS-STAGING
+  s3_endpoint: http://localhost:4566
+  s3_bucket: nfl-data-platform
+  floci_health_url: http://localhost:4566/_localstack/health
+  aws_region: us-east-1
+  aws_access_key_id: test
+  source_connector_name: nfl-hawks-mysql-source
+  sink_connector_name: nfl-staging-jdbc-sink
+  interval_start_ts: 2026-08-01T00:00:00Z
+  interval_end_ts: 2026-09-01T00:00:00Z
+  chaos_interval_start_ts: 2026-09-01T00:00:00Z
+  chaos_interval_end_ts: 2026-10-01T00:00:00Z
+  poll_timeout_seconds: 240
+  poll_interval_ms: 2000
+}
+vars:secret [
+  airflow_password,
+  aws_secret_access_key
+]

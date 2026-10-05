@@ -1,0 +1,49 @@
+meta {
+  name: 06 Kafka Connect source status
+  type: http
+  seq: 6
+  tags: [
+    local-only
+  ]
+}
+
+get {
+  url: {{connect_url}}/connectors/{{connector_name}}/status
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const tasks = (res.getBody() && res.getBody().tasks) || [];
+  if (tasks.length > 0) {
+    bru.setVar("connector_task_id", tasks[0].id);
+  }
+}
+
+tests {
+  test("HTTP 200 for the captured connector", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().name).to.equal(bru.getVar("connector_name"));
+  });
+  test("connector is RUNNING", function () {
+    expect(res.getBody().connector.state).to.equal("RUNNING");
+  });
+  test("it has at least one task and the first task id was captured", function () {
+    expect(res.getBody().tasks.length).to.be.at.least(1);
+    expect(bru.getVar("connector_task_id")).to.equal(res.getBody().tasks[0].id);
+  });
+}
+
+docs {
+  ## What this proves
+  The Debezium source connector is RUNNING and has tasks.
+
+  ## Captures
+  - `connector_task_id`
+
+  ## Consumes
+  - `connector_name` from `05 Kafka Connect list connectors`
+
+  ## When it fails
+  `PAUSED`: someone paused it (see 90-chaos, send its resume request). `FAILED`: the next request shows the task trace.
+}

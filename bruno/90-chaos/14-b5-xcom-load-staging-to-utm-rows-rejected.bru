@@ -1,0 +1,56 @@
+meta {
+  name: 14 B5 XCom load_staging_to_utm.rows_rejected
+  type: http
+  seq: 14
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{chaos_dag_run_id}}/taskInstances/load_staging_to_utm/xcomEntries/rows_rejected?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("chaos_rows_rejected", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key rows_rejected", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("rows_rejected");
+  });
+  test("value has the expected shape and was captured as chaos_rows_rejected", function () {
+    expect(res.getBody().value).to.be.a("number");
+    expect(bru.getVar("chaos_rows_rejected")).to.deep.equal(res.getBody().value);
+  });
+
+     test("rows were rejected", function () {
+       expect(res.getBody().value).to.be.above(0);
+     });
+}
+
+docs {
+  ## What this proves
+  The value task `load_staging_to_utm` published under `rows_rejected`: how many rows the load rejected.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `chaos_rows_rejected`
+
+  ## Consumes
+  - `chaos_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `rows_rejected` (it failed or was skipped before that point).
+}

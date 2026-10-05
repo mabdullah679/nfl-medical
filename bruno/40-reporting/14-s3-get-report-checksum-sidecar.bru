@@ -1,0 +1,47 @@
+meta {
+  name: 14 S3 GET report checksum sidecar
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{report_checksum_key}}
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the sidecar is '<sha256>  <report name>' and carries the published checksum", function () {
+    const parts = String(res.getBody()).trim().split(/\s+/);
+    expect(parts[0]).to.equal(bru.getVar("report_sha256"));
+    expect(parts[1]).to.equal(bru.getVar("report_name"));
+  });
+}
+
+docs {
+  ## What this proves
+  The `.sha256` sidecar next to the report holds the same checksum, in `sha256sum` format, so a recipient can verify the file without this platform.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `report_checksum_key` from `10`
+  - `report_sha256` from `08`
+  - `report_name` from `07`
+
+  ## When it fails
+  404: the sidecar was not written; the DAG writes it in `build_report`.
+}

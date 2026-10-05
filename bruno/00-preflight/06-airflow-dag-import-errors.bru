@@ -1,0 +1,43 @@
+meta {
+  name: 06 Airflow DAG import errors
+  type: http
+  seq: 6
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/importErrors
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("no DAG file failed to import", function () {
+    const files = (res.getBody().import_errors || []).map(e => e.filename);
+    expect(res.getBody().total_entries, files.join(", ")).to.equal(0);
+  });
+}
+
+docs {
+  ## What this proves
+  Every file in the DAGs folder parsed. A DAG with an import error is silently absent from the DAG list, so this is the request that tells a missing DAG from a broken one.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  `import_errors[].stack_trace` in the body is the Python traceback of the broken DAG file.
+}

@@ -1,0 +1,63 @@
+meta {
+  name: 03 nfl_extraction task instances
+  type: http
+  seq: 3
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns/{{extraction_dag_run_id}}/taskInstances
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const tis = (res.getBody() && res.getBody().task_instances) || [];
+  const focus = tis.find(t => t.task_id === "publish");
+  if (focus) {
+    bru.setVar("extraction_task_id", focus.task_id);
+    bru.setVar("extraction_try_number", focus.try_number);
+  }
+}
+
+tests {
+  test("HTTP 200 with task instances", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+  });
+  test("task publish exists and was captured", function () {
+    const ids = res.getBody().task_instances.map(t => t.task_id);
+    expect(ids).to.include("publish");
+    expect(bru.getVar("extraction_task_id")).to.equal("publish");
+    expect(Number(bru.getVar("extraction_try_number"))).to.be.at.least(1);
+  });
+
+  test("every task instance ended in success", function () {
+    const notOk = res.getBody().task_instances.filter(t => t.state !== "success").map(t => t.task_id + "=" + t.state);
+    expect(notOk, "not successful: " + notOk.join(", ")).to.have.lengthOf(0);
+  });
+}
+
+docs {
+  ## What this proves
+  Which tasks of the `nfl_extraction` run executed and how each one ended. This is the per-step view of the stage:
+  the pre-checks and gates are separate task ids, so a red gate is visible by name.
+
+  ## Captures
+  - `extraction_task_id`
+  - `extraction_try_number`
+
+  ## Consumes
+  - `extraction_dag_run_id` from `Trigger nfl_extraction`
+
+  ## When it fails
+  A task that is not `success` names the failing step. `up_for_retry` means a gate is still retrying.
+  Send the task log request that follows for the reason.
+}

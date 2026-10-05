@@ -1,0 +1,61 @@
+meta {
+  name: 09 deliver_sftp task instance
+  type: http
+  seq: 9
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/deliver_sftp
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("delivery_task_id", res.getBody().task_id);
+    bru.setVar("delivery_try_number", res.getBody().try_number);
+    bru.setVar("delivery_task_started_epoch", Math.floor(Date.parse(res.getBody().start_date) / 1000));
+    bru.setVar("delivery_task_ended_epoch", Math.ceil(Date.parse(res.getBody().end_date) / 1000));
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().task_id).to.equal("deliver_sftp");
+  });
+  test("the delivery task succeeded", function () {
+    expect(res.getBody().state).to.equal("success");
+  });
+  test("task id, try number and the task's start and end times were captured", function () {
+    expect(bru.getVar("delivery_task_id")).to.equal("deliver_sftp");
+    expect(Number(bru.getVar("delivery_try_number"))).to.be.at.least(1);
+    expect(bru.getVar("delivery_task_started_epoch")).to.be.a("number").and.above(0);
+    expect(bru.getVar("delivery_task_ended_epoch")).to.be.at.least(bru.getVar("delivery_task_started_epoch"));
+  });
+}
+
+docs {
+  ## What this proves
+  The SFTP delivery step of the forced run ended in success. Its start and end times bound when the upload can have happened; request 19 compares the file's modification time with them.
+
+  ## Captures
+  - `delivery_task_id`
+  - `delivery_try_number`
+  - `delivery_task_started_epoch`
+  - `delivery_task_ended_epoch`
+
+  ## Consumes
+  - `delivery_dag_run_id` from `07 Trigger nfl_reporting with force_redeliver`
+
+  ## When it fails
+  404: the run id is stale, re-send 07 and 08.
+}

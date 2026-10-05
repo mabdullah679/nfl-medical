@@ -1,0 +1,57 @@
+endpoint: /checks/ingestion/reconcile
+check: ingestion.reconcile
+summary: Row-count reconciliation between staging and utm for one interval, for all three table pairs.
+identity:
+  kind: postgres_role
+  name: nfl_check_reconcile
+  scope: >
+    NFL Postgres (nfl-postgres:5432, host port 5440) as the dedicated read-only role
+    nfl_check_reconcile. It can read only the key, event-time and CDC-version columns of
+    the three staging tables and the event-time column of the three utm tables. No
+    business attribute, no observability data, no write.
+credential_env: SHIM_INGESTION_RECONCILE_PG_DSN
+dependencies:
+  - nfl_postgres
+grants:
+  - "CREATE ROLE nfl_check_reconcile LOGIN PASSWORD '<secret>';"
+  - "GRANT CONNECT ON DATABASE nfl TO nfl_check_reconcile;"
+  - "GRANT USAGE ON SCHEMA staging, utm TO nfl_check_reconcile;"
+  - "ALTER ROLE nfl_check_reconcile SET default_transaction_read_only = on;"
+  - "GRANT SELECT (account_id, opened_at, dms_loaded_at, updated_at) ON staging.patient_account TO nfl_check_reconcile;"
+  - "GRANT SELECT (transaction_id, posted_at, dms_loaded_at, updated_at) ON staging.account_transaction TO nfl_check_reconcile;"
+  - "GRANT SELECT (payment_id, received_at, dms_loaded_at, updated_at) ON staging.payment TO nfl_check_reconcile;"
+  - "GRANT SELECT (opened_at) ON utm.dim_patient_account TO nfl_check_reconcile;"
+  - "GRANT SELECT (posted_at) ON utm.fact_account_transaction TO nfl_check_reconcile;"
+  - "GRANT SELECT (received_at) ON utm.fact_payment TO nfl_check_reconcile;"
+grants_rationale: >
+  Counting the newest CDC version of each source row needs the source primary key, the
+  event time that places it in the interval, and the two columns that order versions
+  (dms_loaded_at, updated_at). Counting utm rows in the interval needs only the event-
+  time column. Nothing else is read, so nothing else is granted: names, balances,
+  amounts and business keys stay unreadable to this identity.
+local_enforcement: >
+  ENFORCED by Postgres when the DSN in $SHIM_INGESTION_RECONCILE_PG_DSN logs in as nfl_check_reconcile with
+  exactly the grants above: the role authenticates with its own password, can SELECT
+  only the listed columns, and cannot write. The shim refuses to start if that DSN
+  carries any other user, or a user another endpoint also carries. NOT verified by the
+  shim: that the database holds no EXTRA grant for this role; that is the DDL's job
+  (infra/sql) and is audited with \dp, not by this service.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ConnectAsReconcileRole
+      Effect: Allow
+      Action:
+        - rds-db:connect
+      Resource:
+        - arn:aws:rds-db:${AWS_REGION}:${AWS_ACCOUNT_ID}:dbuser:${NFL_PG_RESOURCE_ID}/nfl_check_reconcile
+    - Sid: ReadOwnSecret
+      Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:nfl/shim/ingestion-reconcile-*
+production_notes: >
+  rds-db:connect is pinned to the one dbuser, so this task role cannot authenticate as
+  any other Postgres role even with a valid IAM token. The secret ARN prefix is pinned
+  to this endpoint's secret alone.

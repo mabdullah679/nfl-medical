@@ -1,0 +1,63 @@
+meta {
+  name: 05 nfl_ingestion task instances
+  type: http
+  seq: 5
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_ingestion/dagRuns/{{ingestion_dag_run_id}}/taskInstances
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  const tis = (res.getBody() && res.getBody().task_instances) || [];
+  const focus = tis.find(t => t.task_id === "load_staging_to_utm");
+  if (focus) {
+    bru.setVar("ingestion_task_id", focus.task_id);
+    bru.setVar("ingestion_try_number", focus.try_number);
+  }
+}
+
+tests {
+  test("HTTP 200 with task instances", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().total_entries).to.be.at.least(1);
+  });
+  test("task load_staging_to_utm exists and was captured", function () {
+    const ids = res.getBody().task_instances.map(t => t.task_id);
+    expect(ids).to.include("load_staging_to_utm");
+    expect(bru.getVar("ingestion_task_id")).to.equal("load_staging_to_utm");
+    expect(Number(bru.getVar("ingestion_try_number"))).to.be.at.least(1);
+  });
+
+  test("every task instance ended in success", function () {
+    const notOk = res.getBody().task_instances.filter(t => t.state !== "success").map(t => t.task_id + "=" + t.state);
+    expect(notOk, "not successful: " + notOk.join(", ")).to.have.lengthOf(0);
+  });
+}
+
+docs {
+  ## What this proves
+  Which tasks of the `nfl_ingestion` run executed and how each one ended. This is the per-step view of the stage:
+  the pre-checks and gates are separate task ids, so a red gate is visible by name.
+
+  ## Captures
+  - `ingestion_task_id`
+  - `ingestion_try_number`
+
+  ## Consumes
+  - `ingestion_dag_run_id` from `Trigger nfl_ingestion`
+
+  ## When it fails
+  A task that is not `success` names the failing step. `up_for_retry` means a gate is still retrying.
+  Send the task log request that follows for the reason.
+}

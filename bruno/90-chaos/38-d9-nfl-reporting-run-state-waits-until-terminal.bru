@@ -1,0 +1,64 @@
+meta {
+  name: 38 D9 nfl_reporting run state (waits until terminal)
+  type: http
+  seq: 38
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{chaos_marker_dag_run_id}}
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForDagRun(bru, "nfl_reporting", bru.getVar("chaos_marker_dag_run_id"));
+  bru.setVar("chaos_marker_poll_count", result.polls);
+  bru.setVar("chaos_marker_poll_waited_ms", result.waitedMs);
+}
+
+script:post-response {
+  bru.setVar("chaos_marker_run_state", res.getBody().state);
+}
+
+tests {
+  test("HTTP 200 for the run this folder triggered", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().dag_run_id).to.equal(bru.getVar("chaos_marker_dag_run_id"));
+  });
+  test("the run reached a terminal state inside poll_timeout_seconds", function () {
+    expect(["success", "failed"], "still " + res.getBody().state + " after " + bru.getVar("chaos_marker_poll_waited_ms") + " ms").to.include(res.getBody().state);
+  });
+  test("the run ended in failed", function () {
+    expect(res.getBody().state).to.equal("failed");
+  });
+}
+
+docs {
+  ## What this proves
+  The reporting run started without the marker ended in `failed`. It takes as long as the gate's retries:
+  `NFL_GATE_RETRIES` retries, `NFL_GATE_RETRY_DELAY_SECONDS` apart (3 and 15 s by default), so expect about a
+  minute. The pre-request script polls until the run is terminal or `poll_timeout_seconds` passes; a run
+  still going at the timeout FAILS the test.
+
+  ## Captures
+  - `chaos_marker_run_state`
+  - `chaos_marker_poll_count`
+  - `chaos_marker_poll_waited_ms`
+
+  ## Consumes
+  - `chaos_marker_dag_run_id` from the trigger request before this one
+  - `poll_timeout_seconds`, `poll_interval_ms` (environment)
+
+  ## When it fails
+  State `success`: the marker pre-check did not gate the run. Send `D10` to see which task did what.
+}

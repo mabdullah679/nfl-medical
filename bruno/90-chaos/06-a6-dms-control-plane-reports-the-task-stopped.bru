@@ -1,0 +1,72 @@
+meta {
+  name: 06 A6 DMS control plane reports the task stopped
+  type: http
+  seq: 6
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.DescribeReplicationTasks
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {}
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("task status is stopped, because Kafka Connect reports the connector PAUSED", function () {
+    const task = res.getBody().ReplicationTasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+    expect(task.Status).to.equal("stopped");
+    expect(task._provenance.Status).to.equal("derived");
+    expect(task._stub_upstream.kafka_connect.connector_state).to.equal("PAUSED");
+  });
+  test("no stop reason is invented, and no Stop command was involved", function () {
+    const task = res.getBody().ReplicationTasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+    expect(task.StopReason).to.equal(null);
+    expect(task._provenance.StopReason).to.equal("unknown");
+    expect(task._stub_intent.last_command).to.not.equal("StopReplicationTask");
+  });
+}
+
+docs {
+  ## What this proves
+  The DMS-shaped view agrees with the measurement: with the Debezium connector really paused (by `A3`, not
+  by a DMS Stop command), the stub derives `Status: stopped` from the connector state Kafka Connect reports.
+  `StopReason` is null and tagged `unknown`: Kafka Connect reports no reason and the stub does not invent
+  one. Together with scenario E (a Stop command with the connector untouched leaves `Status: running`) this
+  shows Status follows the measured state and nothing else.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Still `running`: the stub is not reading the connector state; see `00-preflight/08 DMS stub health`. 400 with no `X-Amz-Target`: the header was edited away. 404 `UnknownOperationException`: the operation name is
+  wrong. On the local stub read `_provenance` beside each field: `measured` was read from a live system,
+  `derived` was computed from a measured value by the rule in `_provenance_detail`, `unknown` is null on
+  purpose. On real AWS a 400 `AccessDeniedException` names the missing `dms:` permission.
+}

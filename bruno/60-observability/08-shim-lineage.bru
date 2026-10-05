@@ -1,0 +1,63 @@
+meta {
+  name: 08 Shim lineage
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{shim_url}}/checks/lineage?interval_start={{interval_start_date}}&interval_end={{interval_end_date}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+  test("the check ran for the captured interval", function () {
+    expect(res.getBody().params.interval_start).to.equal(String(bru.getVar("interval_start_date")));
+    expect(res.getBody().params.interval_end).to.equal(String(bru.getVar("interval_end_date")));
+  });
+
+       test("all five stages recorded events and none is missing, failed or unfinished", function () {
+         const m = res.getBody().measured;
+         expect(m.stages_with_events).to.include.members(["replication", "ingestion", "extraction", "reporting", "delivery"]);
+         expect(m.stages_missing_events).to.have.lengthOf(0);
+         expect(m.stages_failed).to.have.lengthOf(0);
+         expect(m.stages_unfinished).to.have.lengthOf(0);
+       });
+       test("each stage's latest terminal event is a success", function () {
+         const st = res.getBody().measured.stages;
+         for (const s of Object.keys(st)) {
+           expect(st[s].latest_terminal_status, s).to.equal("success");
+         }
+       });
+}
+
+docs {
+  ## What this proves
+  End-to-end lineage for the interval: every stage (replication, ingestion, extraction, reporting, delivery)
+  wrote events to `observability.pipeline_event` and the latest terminal event of each is a success. The
+  response also shows per-stage counts of `success`, `retry` and `failed` events with first and last times,
+  which is the event and metric trail per step. The interval is matched EXACTLY (`interval_start = start AND
+  interval_end = end`); `09` and `10` prove a sub-interval and a wider range are not accepted. Non-HTTP made
+  sendable: SQL run by the column-scoped `nfl_check_lineage` role.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date`, `interval_end_date` from `06`, `07`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+
+   `stages_failed` names the stage whose latest event is a failure: re-run that stage's folder, then this.
+}

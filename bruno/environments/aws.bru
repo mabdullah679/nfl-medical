@@ -1,0 +1,26 @@
+vars {
+  shim_url: https://REPLACE-shim.nfl.example.internal
+  airflow_url: https://REPLACE-airflow.nfl.example.internal
+  airflow_user: REPLACE-airflow-api-user
+  connect_url: https://not-applicable.invalid
+  dms_endpoint: https://dms.us-east-1.amazonaws.com
+  dms_is_stub: false
+  dms_task_identifier: REPLACE-dms-task-identifier
+  s3_endpoint: https://s3.us-east-1.amazonaws.com
+  s3_bucket: REPLACE-nfl-data-platform-bucket
+  floci_health_url: https://not-applicable.invalid
+  aws_region: us-east-1
+  aws_access_key_id: REPLACE-access-key-id
+  source_connector_name: not-applicable
+  sink_connector_name: not-applicable
+  interval_start_ts: 2026-08-01T00:00:00Z
+  interval_end_ts: 2026-09-01T00:00:00Z
+  chaos_interval_start_ts: 2026-09-01T00:00:00Z
+  chaos_interval_end_ts: 2026-10-01T00:00:00Z
+  poll_timeout_seconds: 1800
+  poll_interval_ms: 10000
+}
+vars:secret [
+  airflow_password,
+  aws_secret_access_key
+]

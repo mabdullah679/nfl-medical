@@ -1,0 +1,47 @@
+meta {
+  name: 70 G1 Kafka Connect list connectors
+  type: http
+  seq: 70
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{connect_url}}/connectors
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  bru.setVar("chaos_sink_connector_name", "");
+}
+
+script:post-response {
+  const names = Array.isArray(res.getBody()) ? res.getBody() : [];
+  if (names.includes(bru.getEnvVar("sink_connector_name"))) {
+    bru.setVar("chaos_sink_connector_name", bru.getEnvVar("sink_connector_name"));
+  }
+}
+
+tests {
+  test("HTTP 200 and the sink connector was captured", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("chaos_sink_connector_name")).to.equal(bru.getEnvVar("sink_connector_name"));
+  });
+}
+
+docs {
+  ## What this proves
+  The JDBC sink connector is registered under the name in the environment; that name is what the next requests pause and resume.
+
+  ## Captures
+  - `chaos_sink_connector_name`
+
+  ## Consumes
+  - `connect_url`, `sink_connector_name` (environment)
+
+  ## When it fails
+  Not in the list: the sink was never registered; `scripts/up.sh` registers it.
+}

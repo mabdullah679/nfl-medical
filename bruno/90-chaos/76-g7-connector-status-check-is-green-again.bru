@@ -1,0 +1,57 @@
+meta {
+  name: 76 G7 Connector status check is green again
+  type: http
+  seq: 76
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/replication/connector-status
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForConnector(bru, bru.getVar("chaos_sink_connector_name"), "RUNNING");
+  bru.setVar("chaos_sink_state_seen", result.state);
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+
+  test("verdict is pass", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().state).to.equal("pass");
+  });
+
+      test("both connectors RUNNING with every task running", function () {
+        const m = res.getBody().measured;
+        expect(m.connectors.sink.connector_state).to.equal("RUNNING");
+        expect(m.connectors.sink.tasks_running).to.equal(m.connectors.sink.task_count);
+        expect(m.connectors.source.connector_state).to.equal("RUNNING");
+        expect(m.connectors_unhealthy).to.have.lengthOf(0);
+      });
+}
+
+docs {
+  ## What this proves
+  Proof of restore: the sink is RUNNING again with all tasks running.
+
+  ## Captures
+  - `chaos_sink_state_seen`
+
+  ## Consumes
+  - `chaos_sink_connector_name` from `G1`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

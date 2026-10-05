@@ -1,0 +1,28 @@
+endpoint: /health
+check: health
+summary: Shim liveness plus per-dependency reachability.
+identity:
+  kind: none
+  name: unauthenticated
+  scope: >
+    No backing-store credential. Reachability is tested at the TCP layer only — a
+    connect() to each dependency's host and port, then close. The health endpoint
+    deliberately holds no credential so that an unauthenticated liveness probe cannot be
+    turned into a data path.
+credential_env: null
+credential_env_rationale: >
+  Null by design, and the startup validator special-cases this role rather than treating
+  the absence as a misconfiguration. A TCP connect proves a listener is accepting, which
+  is all this endpoint claims; it does NOT claim the dependency is authenticating or
+  healthy, and the response says so per dependency.
+dependencies: []
+grants: []
+grants_rationale: >
+  TCP connect requires no application-level privilege. Any grant here would be
+  unjustifiable for an unauthenticated endpoint.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement: []
+production_notes: >
+  Stays policy-free. In ECS this is the container healthcheck target. Security-group
+  egress rules, not IAM, are what bound its reach.

@@ -1,0 +1,23 @@
+-- Replication-lag check account for the shim's /checks/replication/lag.
+--
+-- REPLICATION CLIENT is the whole grant: it authorises SHOW MASTER STATUS and
+-- nothing that reads a table. Deliberately NOT granted: SELECT on anything,
+-- REPLICATION SLAVE (would allow reading the binlog stream, i.e. row data),
+-- RELOAD, SUPER, PROCESS.
+--
+-- Rendered and applied by scripts/up.sh on every start (idempotent), not by
+-- the mysql entrypoint, so it also lands on a stack whose volume predates it.
+-- mysql_native_password matches the other accounts here and lets PyMySQL
+-- authenticate without the optional `cryptography` dependency.
+
+-- Kept out of the binary log: this runs on every start, and account DDL in the
+-- binlog would both advance the position Debezium has to chase for nothing and
+-- expose the account's password hash to anything holding REPLICATION SLAVE.
+SET SESSION sql_log_bin = 0;
+
+CREATE USER IF NOT EXISTS 'nfl_check_replication_lag'@'%'
+  IDENTIFIED WITH mysql_native_password BY 'CHANGEME_mysql_lag_check';
+ALTER USER 'nfl_check_replication_lag'@'%'
+  IDENTIFIED WITH mysql_native_password BY 'CHANGEME_mysql_lag_check';
+
+GRANT REPLICATION CLIENT ON *.* TO 'nfl_check_replication_lag'@'%';

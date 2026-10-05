@@ -1,0 +1,76 @@
+endpoint: /checks/extraction/parquet-rowcount
+check: extraction.parquet_rowcount
+summary: Count rows in the interval's Parquet files and compare to the manifest claim.
+identity:
+  kind: aws_access_key
+  name: nfl_check_extraction_rowcount
+  scope: >
+    PRODUCTION TARGET, not a local fact: locally floci accepts any key for any action,
+    so nothing below is enforced and a pass proves reachability only, no IAM identity.
+    floci/S3 at http://host.docker.internal:4566 (host: localhost:4566). GetObject on Parquet objects under the silver and
+    gold layer prefixes, plus ListBucket on those prefixes to enumerate part files. This
+    is the widest-read identity in the shim and is therefore isolated to one endpoint.
+credential_env: SHIM_EXTRACTION_ROWCOUNT_AWS_SECRET_ACCESS_KEY
+credential_env_companions:
+  - SHIM_EXTRACTION_ROWCOUNT_AWS_ACCESS_KEY_ID
+dependencies:
+  - s3
+grants:
+  - "s3:ListBucket on arn:aws:s3:::${NFL_S3_BUCKET} with prefix df_*/silver/, df_*/gold/"
+  - "s3:GetObject on arn:aws:s3:::${NFL_S3_BUCKET}/df_*/silver/*.parquet"
+  - "s3:GetObject on arn:aws:s3:::${NFL_S3_BUCKET}/df_*/gold/*.parquet"
+grants_rationale: >
+  Counting rows requires reading Parquet footers, and pyarrow issues ranged GetObject
+  calls to do it, so GetObject on the data itself is required. No write actions and no
+  access outside the two layer prefixes. Because this identity can read business data,
+  it is the one role whose credential should be short-lived in production.
+local_enforcement: >
+  NOT enforced locally, and no S3 identity is proven locally. floci accepts any access
+  key for every S3 action and evaluates no IAM policy, so a passing call proves only
+  that the endpoint is REACHABLE and the object is there; it proves nothing about who
+  is allowed to read it. All five S3-using checks carry the same floci key (declared
+  under shared_with). The grants and aws_iam_policy are the production target; what
+  holds locally is only that this code path issues no other S3 call.
+shared_with:
+  - extraction_s3_marker
+  - extraction_manifest
+  - reporting_file
+  - delivery_sftp
+shared_rationale: >
+  Locally every S3 check authenticates to floci with the same access key. floci accepts
+  any key and evaluates no IAM policy, so issuing five different keys would look like
+  separation while enforcing none. Production gives each check its own task role with
+  the aws_iam_policy below, and this block is then removed.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ListLayerPrefixes
+      Effect: Allow
+      Action:
+        - s3:ListBucket
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}
+      Condition:
+        StringLike:
+          s3:prefix:
+            - df_*/silver/*
+            - df_*/gold/*
+    - Sid: ReadParquetBodies
+      Effect: Allow
+      Action:
+        - s3:GetObject
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}/df_*/silver/*.parquet
+        - arn:aws:s3:::${NFL_S3_BUCKET}/df_*/gold/*.parquet
+    - Sid: DenyAllWrites
+      Effect: Deny
+      Action:
+        - s3:PutObject
+        - s3:DeleteObject
+        - s3:AbortMultipartUpload
+      Resource:
+        - arn:aws:s3:::${NFL_S3_BUCKET}/*
+production_notes: >
+  Recommend a 15-minute STS session for this role rather than a standing key, and
+  CloudTrail data-event logging on the bucket so every body read by this identity is
+  attributable.

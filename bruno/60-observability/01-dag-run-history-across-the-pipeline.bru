@@ -1,0 +1,74 @@
+meta {
+  name: 01 DAG run history across the pipeline
+  type: http
+  seq: 1
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+post {
+  url: {{airflow_url}}/api/v1/dags/~/dagRuns/list
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+body:json {
+  {
+    "dag_ids": ["nfl_ingestion", "nfl_extraction", "nfl_reporting"],
+    "order_by": "-execution_date",
+    "page_limit": 100
+  }
+}
+
+script:post-response {
+  const runs = (res.getBody() && res.getBody().dag_runs) || [];
+  const count = {};
+  for (const r of runs) {
+    count[r.dag_id + ":" + r.state] = (count[r.dag_id + ":" + r.state] || 0) + 1;
+  }
+  bru.setVar("run_history_counts", count);
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("only pipeline DAGs are in the result (the filter was applied)", function () {
+    const other = res.getBody().dag_runs.filter(r => !["nfl_ingestion", "nfl_extraction", "nfl_reporting"].includes(r.dag_id));
+    expect(other).to.have.lengthOf(0);
+  });
+  test("each of the three stages has at least one successful run on record", function () {
+    const c = bru.getVar("run_history_counts");
+    for (const d of ["nfl_ingestion", "nfl_extraction", "nfl_reporting"]) {
+      expect(c[d + ":success"] || 0, d).to.be.at.least(1);
+    }
+  });
+  test("newest first", function () {
+    const dates = res.getBody().dag_runs.map(r => r.execution_date);
+    expect(dates).to.deep.equal(dates.slice().sort().reverse());
+  });
+}
+
+docs {
+  ## What this proves
+  Run history for all three stages in one filtered query, newest first: which runs succeeded, which failed, for which interval (`conf`). Edit the body to add `"states": ["failed"]` or a date range.
+
+  ## Captures
+  - `run_history_counts`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  No successful run for a stage: run that stage's folder.
+}

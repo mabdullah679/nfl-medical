@@ -1,0 +1,37 @@
+meta {
+  name: 04 Airflow health
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{airflow_url}}/health
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("metadata database is healthy", function () {
+    expect(res.getBody().metadatabase.status).to.equal("healthy");
+  });
+  test("scheduler is healthy (without it triggered runs stay queued)", function () {
+    expect(res.getBody().scheduler.status).to.equal("healthy");
+  });
+}
+
+docs {
+  ## What this proves
+  Airflow's webserver answers and its scheduler has a recent heartbeat. No credentials involved.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Scheduler `unhealthy` or null: `docker logs nfl-airflow`. Every trigger request would queue forever.
+}

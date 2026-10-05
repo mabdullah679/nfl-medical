@@ -1,0 +1,44 @@
+meta {
+  name: 09 S3 list buckets
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{s3_endpoint}}/
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the platform bucket exists", function () {
+    const names = (String(res.getBody()).match(/<Name>[^<]+<\/Name>/g) || []).map(n => n.replace(/<\/?Name>/g, ""));
+    expect(names).to.include(bru.getEnvVar("s3_bucket"));
+  });
+}
+
+docs {
+  ## What this proves
+  S3 answers a SigV4-signed ListBuckets and the bucket `{{s3_bucket}}` exists. The response is XML, shown raw.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `s3_endpoint`, `s3_bucket`, `aws_region`, `aws_access_key_id`, `aws_secret_access_key` (environment)
+
+  ## When it fails
+  Bucket missing: `scripts/up.sh` creates it. 403 on real AWS: the credential lacks `s3:ListAllMyBuckets`.
+}

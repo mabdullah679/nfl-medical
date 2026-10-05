@@ -1,0 +1,53 @@
+meta {
+  name: 12 XCom deliver_sftp.delivery_action
+  type: http
+  seq: 12
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{delivery_dag_run_id}}/taskInstances/deliver_sftp/xcomEntries/{{delivery_xcom_key}}?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("delivery_action", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key delivery_action", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("delivery_action");
+  });
+  test("this run uploaded: the action is delivered or redelivered_forced, never a skip", function () {
+    expect(["delivered", "redelivered_forced"]).to.include(res.getBody().value);
+    expect(bru.getVar("delivery_action")).to.equal(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  What the forced run's delivery step did. `delivered` (no file was there before) or `redelivered_forced`
+  (a file was there and was replaced) both mean the temp-name upload, read-back verification and rename
+  ran. `skipped_already_delivered` FAILS this request: it would mean the run delivered nothing.
+
+  ## Captures
+  - `delivery_action`
+
+  ## Consumes
+  - `delivery_dag_run_id`
+  - `delivery_xcom_key` from `11 XCom keys of deliver_sftp`
+
+  ## When it fails
+  `skipped_already_delivered`: the run did not receive `force_redeliver: true`; check the conf in `07`.
+}

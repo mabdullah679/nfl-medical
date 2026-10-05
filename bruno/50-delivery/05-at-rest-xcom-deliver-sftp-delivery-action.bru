@@ -1,0 +1,55 @@
+meta {
+  name: 05 AT REST XCom deliver_sftp.delivery_action
+  type: http
+  seq: 5
+  tags: [
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{at_rest_dag_run_id}}/taskInstances/deliver_sftp/xcomEntries/delivery_action?stringify=false
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("at_rest_delivery_action", res.getBody().value);
+  }
+}
+
+tests {
+  test("HTTP 200 for key delivery_action", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().key).to.equal("delivery_action");
+  });
+  test("value has the expected shape and was captured as at_rest_delivery_action", function () {
+    expect(res.getBody().value).to.be.a("string").and.not.equal("");
+    expect(bru.getVar("at_rest_delivery_action")).to.deep.equal(res.getBody().value);
+  });
+
+  test("the action is one of the three documented outcomes", function () {
+    expect(["delivered", "skipped_already_delivered", "redelivered_forced"]).to.include(res.getBody().value);
+  });
+}
+
+docs {
+  ## What this proves
+  The value task `deliver_sftp` published under `delivery_action`: what the earlier run's delivery step did. `skipped_already_delivered` is the normal answer on a warm stack and means that run uploaded NOTHING; it is recorded here, and the upload is proven from request 07 on.
+  `?stringify=false` makes Airflow return the real JSON value instead of a Python repr string.
+
+  ## Captures
+  - `at_rest_delivery_action`
+
+  ## Consumes
+  - `at_rest_dag_run_id`
+
+  ## When it fails
+  404: the task did not publish `delivery_action` (it failed or was skipped before that point).
+}

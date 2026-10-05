@@ -1,0 +1,42 @@
+meta {
+  name: 01 Shim health
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{shim_url}}/health
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200 and shim reports up", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().ok).to.equal(true);
+    expect(res.getBody().shim).to.equal("up");
+  });
+  test("no declared dependency is unreachable", function () {
+    expect(res.getBody().dependencies_unreachable, JSON.stringify(res.getBody().dependencies_unreachable)).to.have.lengthOf(0);
+  });
+  test("all five dependencies were probed", function () {
+    expect(Object.keys(res.getBody().dependencies)).to.have.members(["kafka_connect", "nfl_postgres", "mysql_source", "s3", "sftp"]);
+  });
+}
+
+docs {
+  ## What this proves
+  The check shim is up and each system it fronts (Kafka Connect, Postgres, MySQL, S3, SFTP) has a TCP
+  listener. The shim is what turns every non-HTTP check (SQL, binlog position, Parquet footers, SFTP) into
+  a Send button. It proves a listener only, not authentication; each check proves its own credential.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Connection refused: `nfl-shim` is not running (`scripts/up.sh`). `dependencies_unreachable` names the
+  container that is down.
+}

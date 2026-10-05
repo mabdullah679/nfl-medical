@@ -1,0 +1,72 @@
+meta {
+  name: 52 E3 DMS Status keeps reflecting the measured connector state after Stop
+  type: http
+  seq: 52
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.DescribeReplicationTasks
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {}
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("a later Describe still reports running, because the connector is still RUNNING", function () {
+    const task = res.getBody().ReplicationTasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+    expect(task._stub_upstream.kafka_connect.connector_state).to.equal("RUNNING");
+    expect(task._stub_upstream.kafka_connect.task_states).to.deep.equal(["RUNNING"]);
+    expect(task.Status).to.equal("running");
+    expect(task._provenance.Status).to.equal("derived");
+    expect(task.StopReason).to.equal(null);
+  });
+  test("the Stop command is still on record as the last command, with no effect", function () {
+    const task = res.getBody().ReplicationTasks.find(t => t.ReplicationTaskIdentifier === bru.getEnvVar("dms_task_identifier"));
+    expect(task._stub_intent.last_command).to.equal("StopReplicationTask");
+    expect(task._stub_intent.effect).to.match(/^none/);
+  });
+}
+
+docs {
+  ## What this proves
+  A Stop command cannot fake a stopped task. After `E2`, with the Debezium connector untouched, a fresh
+  Describe still reports `Status: running`; the last command is visible in `_stub_intent` and is declared to
+  have no effect on any reported field. Scenario A is the other half: when the connector really is paused,
+  Status reads `stopped` with no Stop command at all.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  `stopped`: the stub is letting the recorded command override the measurement. 400 with no `X-Amz-Target`: the header was edited away. 404 `UnknownOperationException`: the operation name is
+  wrong. On the local stub read `_provenance` beside each field: `measured` was read from a live system,
+  `derived` was computed from a measured value by the rule in `_provenance_detail`, `unknown` is null on
+  purpose. On real AWS a 400 `AccessDeniedException` names the missing `dms:` permission.
+}

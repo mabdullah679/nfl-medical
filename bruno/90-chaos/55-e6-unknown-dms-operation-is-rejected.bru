@@ -1,0 +1,57 @@
+meta {
+  name: 55 E6 Unknown DMS operation is rejected
+  type: http
+  seq: 55
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+post {
+  url: {{dms_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: AmazonDMSv20160101.DeleteEverything
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: dms
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {}
+}
+
+tests {
+  test("HTTP 404 UnknownOperationException", function () {
+    expect(res.getStatus()).to.equal(404);
+    expect(JSON.stringify(res.getBody())).to.include("UnknownOperationException");
+  });
+  test("even the error is labelled synthetic", function () {
+    expect(res.getHeader("x-nfl-stub")).to.equal("true");
+  });
+}
+
+docs {
+  ## What this proves
+  The stub implements a closed list of operations and rejects anything else in the AWS error shape, still labelled synthetic.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  HTTP 200: the stub is answering an operation it does not implement.
+}

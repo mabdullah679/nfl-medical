@@ -1,0 +1,63 @@
+meta {
+  name: 30 D1 Latest successful nfl_extraction run for the interval
+  type: http
+  seq: 30
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns?state=success&order_by=-execution_date&limit=50
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  bru.setVar("chaos_marker_key", "");
+  bru.setVar("chaos_marker_baseline_ok", false);
+  bru.setVar("chaos_marker_baseline_key", "");
+}
+
+script:post-response {
+  const runs = (res.getBody() && res.getBody().dag_runs) || [];
+  const want = [bru.getEnvVar("interval_start_ts"), bru.getEnvVar("interval_end_ts")];
+  const hit = runs.find(r => r.conf && r.conf.interval_start === want[0] && r.conf.interval_end === want[1]);
+  if (hit) {
+    bru.setVar("chaos_extraction_dag_run_id", encodeURIComponent(hit.dag_run_id));
+    bru.setVar("chaos_extraction_dag_run_id_raw", hit.dag_run_id);
+  } else {
+    bru.setVar("chaos_extraction_dag_run_id", "");
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("a successful nfl_extraction run exists for the environment's interval and was captured", function () {
+    expect(bru.getVar("chaos_extraction_dag_run_id"), "no successful run for this interval: run the earlier stage folder first").to.be.a("string").and.not.equal("");
+  });
+}
+
+docs {
+  ## What this proves
+  Finds the newest successful `nfl_extraction` run whose conf matches `interval_start_ts` / `interval_end_ts`,
+  so this folder can be run on its own without triggering anything. Scenario D (extraction output goes missing) needs the marker key of a real, published interval.
+
+  ## Captures
+  - chaos_extraction_dag_run_id (URL-encoded)
+  - `chaos_extraction_dag_run_id_raw`
+
+  ## Consumes
+  - `interval_start_ts`, `interval_end_ts` (environment)
+
+  ## When it fails
+  No matching run: the stage has not succeeded for this interval yet. Run the stage's own folder first.
+}
