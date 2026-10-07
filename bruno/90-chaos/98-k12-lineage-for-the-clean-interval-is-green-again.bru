@@ -1,0 +1,41 @@
+meta {
+  name: 98 K12 Lineage for the clean interval is green again
+  type: http
+  seq: 98
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/lineage?interval_start={{interval_start_date_marker}}&interval_end={{interval_end_date_marker}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass: no stage of the clean interval is left failed", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    expect(res.getBody().measured.stages_failed).to.have.lengthOf(0);
+  });
+}
+
+docs {
+  ## What this proves
+  Scenario K left the clean interval as it found it: every stage's latest outcome is a success.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `interval_start_date_marker`, `interval_end_date_marker` from `D3`, `D4`
+
+  ## When it fails
+  `stages_failed` names reporting: `K11` did not succeed. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

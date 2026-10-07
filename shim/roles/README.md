@@ -41,6 +41,9 @@ the DDL in that file's `grants` list:
 | `ingestion_freshness.yaml` | `SHIM_INGESTION_FRESHNESS_PG_DSN` | `nfl_check_freshness` |
 | `lineage.yaml` | `SHIM_LINEAGE_PG_DSN` | `nfl_check_lineage` |
 | `events.yaml` | `SHIM_EVENTS_PG_DSN` | `nfl_check_events` |
+| `trace.yaml` | `SHIM_TRACE_PG_DSN` | `nfl_check_trace` |
+| `alert_delivery.yaml` | `SHIM_ALERT_DELIVERY_PG_DSN` | `nfl_check_alert_delivery` |
+| `monitor.yaml` | `SHIM_MONITOR_PG_DSN` | `nfl_check_monitor` |
 
 ## Declared vs enforced
 

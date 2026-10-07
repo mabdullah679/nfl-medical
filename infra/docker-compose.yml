@@ -29,6 +29,8 @@ volumes:
   kafka-data:
   airflow-logs:
   sftp-upload:
+  mail-data:
+  logship-data:
 
 services:
 
@@ -253,6 +255,9 @@ services:
       # secret to any API caller through GET /api/v1/config.
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "non-sensitive-only"
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      # The address a person reaches this Airflow at. Every alert carries a link
+      # to the failed task's log, built from this.
+      AIRFLOW__WEBSERVER__BASE_URL: "http://localhost:${NFL_AIRFLOW_PORT:-8095}"
       _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:?set AIRFLOW_ADMIN_USER in infra/nfl.env}
       _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in infra/nfl.env}
       _AIRFLOW_WWW_USER_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.invalid}
@@ -396,7 +401,8 @@ services:
   # anything but the role that endpoint's YAML names. Each variable below
   # carries only the identity that check needs:
   #   Postgres checks   -> one role each: nfl_check_reconcile, _quality,
-  #                        _freshness, _lineage, _events (column-level grants,
+  #                        _freshness, _lineage, _events, _trace,
+  #                        _alert_delivery, _monitor (column-level grants,
   #                        infra/sql/06-check-identities.sql.tmpl)
   #   replication lag   -> nfl_check_replication_lag (MySQL REPLICATION CLIENT)
   #   S3 checks         -> the emulator's single key pair (floci enforces no
@@ -424,6 +430,10 @@ services:
       SHIM_INGESTION_FRESHNESS_PG_DSN: "postgresql://nfl_check_freshness:${PG_CHECK_FRESHNESS_PASSWORD:?set PG_CHECK_FRESHNESS_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
       SHIM_LINEAGE_PG_DSN: "postgresql://nfl_check_lineage:${PG_CHECK_LINEAGE_PASSWORD:?set PG_CHECK_LINEAGE_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
       SHIM_EVENTS_PG_DSN: "postgresql://nfl_check_events:${PG_CHECK_EVENTS_PASSWORD:?set PG_CHECK_EVENTS_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
+      SHIM_TRACE_PG_DSN: "postgresql://nfl_check_trace:${PG_CHECK_TRACE_PASSWORD:?set PG_CHECK_TRACE_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
+      SHIM_ALERT_DELIVERY_PG_DSN: "postgresql://nfl_check_alert_delivery:${PG_CHECK_ALERT_DELIVERY_PASSWORD:?set PG_CHECK_ALERT_DELIVERY_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
+      SHIM_MONITOR_PG_DSN: "postgresql://nfl_check_monitor:${PG_CHECK_MONITOR_PASSWORD:?set PG_CHECK_MONITOR_PASSWORD in infra/nfl.env}@nfl-postgres:5432/nfl"
+      SHIM_ALERT_MAX_ATTEMPTS: ${NFL_ALERT_MAX_ATTEMPTS:-10}
       SHIM_EXTRACTION_MARKER_AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       SHIM_EXTRACTION_MARKER_AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
       SHIM_EXTRACTION_MANIFEST_AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
@@ -493,6 +503,115 @@ services:
       - "127.0.0.1:${NFL_DMS_STUB_PORT:-8098}:8098"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8098/health', timeout=4).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # Operations inbox. A mail server that accepts every message and keeps it, so
+  # an alert is something that was really sent over SMTP and can be read back:
+  # web UI and HTTP API on the published port. It stands in for the agreed
+  # Operations channel; in AWS the same SMTP settings point at SES.
+  # ---------------------------------------------------------------------------
+  mail:
+    image: axllent/mailpit:v1.31.4
+    container_name: nfl-mail
+    <<: *restart
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: "5000"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports:
+      - "127.0.0.1:${NFL_MAIL_PORT:-8094}:8025"
+    volumes:
+      - mail-data:/data
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # The watcher. Probes replication and the orchestrator on a timer, records
+  # every sample, raises the alert of a state change, and delivers every alert
+  # (its own and the DAGs') to the Operations inbox. Two database identities:
+  #   nfl_monitor   SELECT the heartbeat; write monitor_sample; INSERT events
+  #   nfl_notifier  SELECT events; SELECT/INSERT alert_delivery
+  # It holds no pipeline data role, no S3 key and no Airflow credential.
+  #
+  # depends_on is start-order only: it must keep running, and say so, when
+  # something it watches is down.
+  # ---------------------------------------------------------------------------
+  watch:
+    build:
+      context: ../watch
+    image: nfl-watch:local
+    container_name: nfl-watch
+    <<: *restart
+    depends_on: [postgres, kafka-connect, airflow, mail]
+    environment:
+      NFL_PG_HOST: nfl-postgres
+      NFL_PG_PORT: "5432"
+      NFL_PG_DB: nfl
+      NFL_PG_MONITOR_USER: nfl_monitor
+      NFL_PG_MONITOR_PASSWORD: ${PG_MONITOR_PASSWORD:?set PG_MONITOR_PASSWORD in infra/nfl.env}
+      NFL_PG_NOTIFIER_USER: nfl_notifier
+      NFL_PG_NOTIFIER_PASSWORD: ${PG_NOTIFIER_PASSWORD:?set PG_NOTIFIER_PASSWORD in infra/nfl.env}
+      NFL_CONNECT_URL: "http://nfl-kafka-connect:8083"
+      NFL_CONNECTORS: "nfl-hawks-mysql-source,nfl-staging-jdbc-sink"
+      NFL_ORCHESTRATOR_HEALTH_URL: "http://nfl-airflow:8080/health"
+      NFL_AIRFLOW_PUBLIC_URL: "http://localhost:${NFL_AIRFLOW_PORT:-8095}"
+      NFL_LOG_GROUP_PREFIX: /nfl
+      NFL_WATCH_INTERVAL_SECONDS: ${NFL_WATCH_INTERVAL_SECONDS:-15}
+      # Same limit the ingestion pre_check and /checks/ingestion/freshness use.
+      NFL_WATCH_HEARTBEAT_MAX_AGE_SECONDS: ${NFL_REPLICATION_HEARTBEAT_MAX_AGE_SECONDS:-300}
+      NFL_ALERT_SMTP_HOST: nfl-mail
+      NFL_ALERT_SMTP_PORT: "1025"
+      NFL_ALERT_FROM: ${NFL_ALERT_FROM:-nfl-alerts@nfl.example.invalid}
+      NFL_ALERT_TO: ${NFL_ALERT_TO:-operations@nfl.example.invalid,production-support@nfl.example.invalid}
+      NFL_ALERT_MAX_ATTEMPTS: ${NFL_ALERT_MAX_ATTEMPTS:-10}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8099/', timeout=4).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    networks: [nfl]
+
+  # ---------------------------------------------------------------------------
+  # Log shipper. Reads every nfl-* container's stdout/stderr from the Docker
+  # API and the Airflow task log files, and writes them to CloudWatch Logs on
+  # floci (log groups /nfl/<container> and /nfl/airflow-tasks).
+  #
+  # It mounts the Docker socket, which is root on the Docker host for whoever
+  # controls this container. That is accepted for a local stand-in only: the
+  # image is pinned, nothing is published to the host, and the container does
+  # not exist in AWS, where each service logs through its own driver.
+  # ---------------------------------------------------------------------------
+  logship:
+    image: timberio/vector:0.59.0-alpine
+    container_name: nfl-logship
+    <<: *restart
+    environment:
+      # Endpoint, region and the /nfl group prefix are literals in
+      # logship/vector.yaml; only the key pair is passed in.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      VECTOR_LOG: warn
+    volumes:
+      - ./logship/vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - airflow-logs:/airflow-logs:ro
+      - logship-data:/var/lib/vector
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8686/health"]
       interval: 10s
       timeout: 5s
       retries: 12

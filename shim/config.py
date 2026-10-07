@@ -119,6 +119,24 @@ class Settings:
             "SHIM_EVENTS_TABLE", "observability.pipeline_event"
         )
         self.events_row_cap: int = _int_env("SHIM_EVENTS_ROW_CAP", 200)
+        self.alert_delivery_table: str = os.environ.get(
+            "SHIM_ALERT_DELIVERY_TABLE", "observability.alert_delivery"
+        )
+        # An alert younger than this may simply not have been picked up by the
+        # dispatcher yet; older than this without a successful delivery, it
+        # reached nobody.
+        self.alert_delivery_grace_seconds: int = _int_env(
+            "SHIM_ALERT_DELIVERY_GRACE_SECONDS", 60
+        )
+        # Mirrors NFL_ALERT_MAX_ATTEMPTS on nfl-watch.
+        self.alert_max_attempts: int = _int_env("SHIM_ALERT_MAX_ATTEMPTS", 10)
+        self.monitor_table: str = os.environ.get(
+            "SHIM_MONITOR_TABLE", "observability.monitor_sample"
+        )
+        # Three watcher ticks. Older than this, the watcher is treated as stopped.
+        self.monitor_max_sample_age_seconds: int = _int_env(
+            "SHIM_MONITOR_MAX_SAMPLE_AGE_SECONDS", 45
+        )
         self.ingestion_batch_table: str = os.environ.get(
             "SHIM_INGESTION_BATCH_TABLE", "utm.ingestion_batch"
         )

@@ -1,0 +1,45 @@
+meta {
+  name: 17 Operations inbox is reachable
+  type: http
+  seq: 17
+  tags: [
+    local-only
+  ]
+}
+
+get {
+  url: {{mail_url}}/api/v1/messages?limit=1
+  body: none
+  auth: none
+}
+
+script:post-response {
+  bru.setVar("inbox_total", res.getBody() && res.getBody().total);
+}
+
+tests {
+  test("HTTP 200 from the inbox API", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("it reports how many messages it holds", function () {
+    expect(res.getBody().total).to.be.a("number").at.least(0);
+    expect(res.getBody().messages).to.be.an("array");
+  });
+}
+
+docs {
+  ## What this proves
+  The local Operations inbox answers. It is a mail server that accepts every message `nfl-watch` sends and
+  keeps it, readable here and in a browser at `{{mail_url}}`. This request only proves the inbox is up; the
+  proof that a specific alert arrived in it is in `90-chaos` (`B15`, `B16`, `H6`). It stands in for the
+  agreed Operations channel: nobody is paged.
+
+  ## Captures
+  - `inbox_total`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Connection refused: the `nfl-mail` container is not running (`scripts/up.sh`).
+}

@@ -1,0 +1,68 @@
+meta {
+  name: 88 K2 INJECT overwrite the manifest's gold row count
+  type: http
+  seq: 88
+  tags: [
+    chaos
+  ]
+}
+
+put {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{chaos_manifest_key}}
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  const guards = require("./lib/guards.js");
+  const base = guards.manifestBaseline(bru);
+  const tampered = JSON.parse(JSON.stringify(base.original));
+  tampered.layers.gold.row_count = base.original.layers.gold.row_count + 1;
+  bru.setVar("chaos_manifest_tampered_rows", tampered.layers.gold.row_count);
+  req.setBody(tampered);
+}
+
+tests {
+  test("S3 stored the object (HTTP 200)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the request went to the guarded manifest key", function () {
+    expect(req.getUrl().endsWith("/" + bru.getVar("chaos_manifest_key"))).to.equal(true);
+    expect(bru.getVar("chaos_manifest_key")).to.match(/\/manifest\.json$/);
+  });
+}
+
+docs {
+  ## What this proves
+  DESTRUCTIVE: makes the published manifest claim one more gold row than the Parquet files hold, as if the
+  report engine and the extraction disagreed. The Parquet files, their checksums and `_SUCCESS` are
+  untouched. The matching restore is `K8 RESTORE trigger nfl_extraction`, which republishes the manifest;
+  send it even if a request in between fails. The pre-request script refuses to run unless `K1` captured
+  the manifest stored under this exact key.
+
+  ## Captures
+  - `chaos_manifest_tampered_rows` (pre-request)
+
+  ## Consumes
+  - `chaos_manifest_key`, `chaos_manifest_original`, `chaos_manifest_baseline_key` from `K1`
+
+  ## When it fails
+  The script threw: send `D1`, `D2` and `K1` first.
+}

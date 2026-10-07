@@ -1,0 +1,65 @@
+meta {
+  name: 15 Shim alert delivery, last 24 hours
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{shim_url}}/checks/alerts/delivery?since_minutes=1440
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const c = (res.getBody() && res.getBody().measured && res.getBody().measured.counts) || {};
+  bru.setVar("alerts_notifiable_24h", c.matched);
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass: no notification is undelivered, abandoned or still pending", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    const s = res.getBody().measured.counts.by_state;
+    expect(s.undelivered || 0).to.equal(0);
+    expect(s.abandoned || 0).to.equal(0);
+    expect(s.pending || 0).to.equal(0);
+  });
+  test("the whole list was returned", function () {
+    expect(res.getBody().measured.truncated).to.equal(false);
+  });
+  test("every notification names its channel, its recipients and the message that carried it", function () {
+    for (const e of res.getBody().measured.events) {
+      expect(e.delivery_state, JSON.stringify(e)).to.equal("sent");
+      expect(e.channel).to.equal("operations");
+      expect(e.recipients).to.be.a("string").and.not.equal("");
+      expect(e.message_id).to.be.a("string").and.not.equal("");
+      expect(["critical", "warning", "info"]).to.include(e.severity);
+    }
+  });
+}
+
+docs {
+  ## What this proves
+  Alerts reach a channel, and a missed one is visible. Every event that asks for a notification
+  (`metrics.notify`) is delivered by `nfl-watch`, which records each attempt in
+  `observability.alert_delivery`. This check joins the two: an alert older than the grace period with no
+  successful delivery is `undelivered` and turns the verdict red. With no alert in the window the verdict is
+  a pass that says so (`matched: 0`); the delivery path itself is proven in `90-chaos` (`B14`, `H5`, `K7`).
+  Non-HTTP made sendable: SQL run by the read-only `nfl_check_alert_delivery` role.
+
+  ## Captures
+  - `alerts_notifiable_24h`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+      `undelivered` or `abandoned`: read `last_attempt_detail` on that row; it is the mail server's answer or the
+      connection error. `docker logs nfl-watch` shows the attempts. `pending` clears within one grace period.
+      HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

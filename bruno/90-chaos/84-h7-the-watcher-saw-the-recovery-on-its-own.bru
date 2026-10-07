@@ -1,0 +1,58 @@
+meta {
+  name: 84 H7 The watcher saw the recovery on its own
+  type: http
+  seq: 84
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/monitor
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  await poll.waitForConnector(bru, bru.getEnvVar("source_connector_name"), "RUNNING");
+  await poll.waitForShim(bru, "/checks/monitor", function (b) {
+    return b.ok === true;
+  });
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass again: every probe ok, no open incident", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    const p = res.getBody().measured.probes.connector_status;
+    expect(p.level).to.equal("ok");
+    expect(p.incident).to.equal(null);
+  });
+  test("the heartbeat is inside its threshold after the outage", function () {
+    const hb = res.getBody().measured.probes.replication_heartbeat;
+    expect(hb.level).to.equal("ok");
+    expect(hb.value).to.be.at.most(hb.threshold);
+  });
+}
+
+docs {
+  ## What this proves
+  The restore worked and the watcher says so without being told: the same probe that was critical is ok and
+  the incident is closed.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `source_connector_name` (environment)
+
+  ## When it fails
+  Still critical: the connector did not resume; `curl {{connect_url}}/connectors/{{source_connector_name}}/status`. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

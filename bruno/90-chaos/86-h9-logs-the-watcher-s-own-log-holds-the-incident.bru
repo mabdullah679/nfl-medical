@@ -1,0 +1,72 @@
+meta {
+  name: 86 H9 Logs: the watcher's own log holds the incident
+  type: http
+  seq: 86
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+post {
+  url: {{logs_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: Logs_20140328.FilterLogEvents
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: logs
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {
+    "logGroupName": "{{log_group_prefix}}/nfl-watch",
+    "filterPattern": "{{chaos_watch_incident}}",
+    "limit": 50
+  }
+}
+
+script:pre-request {
+  await bru.sleep(Number(bru.getEnvVar("log_ship_wait_ms") || 8000));
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the watcher logged both state changes under the incident id", function () {
+    const text = res.getBody().events.map(e => e.message);
+    expect(text.some(m => m.includes("state change") && m.includes("ok -> critical")), "ok -> critical").to.equal(true);
+    expect(text.some(m => m.includes("state change") && m.includes("critical -> ok")), "critical -> ok").to.equal(true);
+  });
+  test("and both deliveries", function () {
+    const sent = res.getBody().events.filter(e => e.message.includes("alert delivery sent"));
+    expect(sent.length).to.equal(2);
+  });
+}
+
+docs {
+  ## What this proves
+  The incident id from the alert finds the watcher's own log lines in CloudWatch Logs: the two state changes
+  and the two deliveries. An alert, its events and its logs are joined by one token.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_watch_incident` from `H3`
+  - `logs_endpoint`, `log_group_prefix`, `log_ship_wait_ms` (environment)
+
+  ## When it fails
+  No event: the shipper is down or behind (`docker logs nfl-logship`).
+}

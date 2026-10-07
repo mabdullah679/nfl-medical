@@ -1,0 +1,52 @@
+meta {
+  name: 24 B15 The alert email is in the Operations inbox
+  type: http
+  seq: 24
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{mail_url}}/api/v1/search?query={{chaos_dag_run_id}}
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const msgs = (res.getBody() && res.getBody().messages) || [];
+  bru.setVar("chaos_alert_mail_id", msgs.length ? msgs[0].ID : "");
+}
+
+tests {
+  test("HTTP 200 and exactly one message mentions this run", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().messages_count).to.equal(1);
+  });
+  test("its subject states the severity, the stage, the step and the run", function () {
+    const m = res.getBody().messages[0];
+    expect(m.Subject).to.equal("[NFL][CRITICAL] ingestion/is_failed_gate failed (run " + bru.getVar("chaos_dag_run_id") + ")");
+  });
+  test("it is addressed to Operations and Production Support", function () {
+    const to = res.getBody().messages[0].To.map(t => t.Address);
+    expect(to.some(a => a.startsWith("operations@"))).to.equal(true);
+    expect(to.some(a => a.startsWith("production-support@"))).to.equal(true);
+  });
+}
+
+docs {
+  ## What this proves
+  The message itself, read back from the mail server that received it. One email exists for the failed run,
+  no duplicate, with the severity, stage, step and run id in the subject line. Open `{{mail_url}}` in a
+  browser to see the same message. Tagged `local-only`: the inbox is the local stand-in for the channel.
+
+  ## Captures
+  - `chaos_alert_mail_id`
+
+  ## Consumes
+  - `chaos_dag_run_id` from `B1`
+
+  ## When it fails
+  No message while `B14` says `sent`: the inbox was emptied or restarted without its volume. Two messages: the dispatcher sent twice, which `alert_delivery`'s unique index should make impossible.
+}

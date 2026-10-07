@@ -1,0 +1,62 @@
+meta {
+  name: 90 K4 Is Process Failed stops the run and delivers nothing
+  type: http
+  seq: 90
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{chaos_gate_dag_run_id}}/taskInstances
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForDagRun(bru, "nfl_reporting", bru.getVar("chaos_gate_dag_run_id"));
+  bru.setVar("chaos_gate_run_state", result.state);
+}
+
+tests {
+  test("the run ended failed", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("chaos_gate_run_state")).to.equal("failed");
+  });
+  test("the report was built, and is_process_failed is the one task that failed", function () {
+    const byId = {};
+    for (const t of res.getBody().task_instances) { byId[t.task_id] = t.state; }
+    expect(byId.wait_for_success_marker).to.equal("success");
+    expect(byId.build_report).to.equal("success");
+    expect(res.getBody().task_instances.filter(t => t.state === "failed").map(t => t.task_id)).to.deep.equal(["is_process_failed"]);
+  });
+  test("nothing was delivered: deliver_sftp never ran", function () {
+    const byId = {};
+    for (const t of res.getBody().task_instances) { byId[t.task_id] = t.state; }
+    expect(byId.deliver_sftp).to.equal("upstream_failed");
+    expect(byId.capture_events).to.equal("upstream_failed");
+  });
+}
+
+docs {
+  ## What this proves
+  The "Is Process Failed" gate does its job when it has to say YES. The report was built, the gate compared
+  it with the manifest, failed the run, and the delivery task never started. Until this scenario the gate
+  had only ever been seen passing.
+
+  ## Captures
+  - `chaos_gate_run_state` (pre-request)
+
+  ## Consumes
+  - `chaos_gate_dag_run_id` from `K3`
+
+  ## When it fails
+  The run succeeded: `K2` did not change the manifest. `build_report` failed instead: the tampering broke something the build checks before the gate.
+}

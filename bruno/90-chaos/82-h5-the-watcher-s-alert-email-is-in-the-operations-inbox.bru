@@ -1,0 +1,45 @@
+meta {
+  name: 82 H5 The watcher's alert email is in the Operations inbox
+  type: http
+  seq: 82
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{mail_url}}/api/v1/search?query={{chaos_watch_incident}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200 and exactly one message carries the incident id so far", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().messages_count).to.equal(1);
+  });
+  test("its subject says critical, replication and which probe", function () {
+    expect(res.getBody().messages[0].Subject).to.equal("[NFL][CRITICAL] replication/watch_connector_status failed");
+  });
+  test("the text names the paused connector and where its logs are", function () {
+    const s = res.getBody().messages[0].Snippet;
+    expect(s).to.include("raised by nfl-watch");
+    expect(s).to.include(bru.getVar("chaos_watch_incident"));
+  });
+}
+
+docs {
+  ## What this proves
+  The email a person would have received, read back from the inbox: one message for the incident, critical,
+  naming the probe. Tagged `local-only`.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_watch_incident` from `H3`
+
+  ## When it fails
+  No message while `H4` says `sent`: the inbox lost it (restarted without its volume).
+}

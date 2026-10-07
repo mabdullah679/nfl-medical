@@ -1,0 +1,59 @@
+meta {
+  name: 22 B13 Follow the alert's log link
+  type: http
+  seq: 22
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}{{chaos_alert_log_api_path}}
+  body: none
+  auth: basic
+}
+
+headers {
+  Accept: text/plain
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+tests {
+  test("the link in the alert resolves (HTTP 200 with log text)", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(String(res.getBody()).length).to.be.above(0);
+  });
+  test("it is the log of the failure the alert describes", function () {
+    const log = String(res.getBody());
+    expect(log).to.include("Is Failed = YES");
+    expect(log).to.include("OPERATIONS ALERT recorded");
+    expect(log).to.include("run=" + bru.getVar("chaos_dag_run_id"));
+  });
+  test("the log names the thread the alert row carries", function () {
+    expect(String(res.getBody())).to.include("correlation_id=" + bru.getVar("chaos_alert_correlation_id"));
+  });
+}
+
+docs {
+  ## What this proves
+  The link in the alert is real. The URL of this request is nothing but the environment's `airflow_url` and
+  the `log_api_path` stored on the alert row: no run id, task id or attempt number is supplied by this
+  collection. It returns the log of the failed gate.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_alert_log_api_path`, `chaos_alert_correlation_id` from `B12`
+  - `chaos_dag_run_id` from `B1`
+
+  ## When it fails
+  The content tests fail while the status is 200: Airflow answers 200 with a "log not found" text for an attempt that
+  does not exist, so a wrong `try_number` on the alert shows up here as missing content, not as a 404 (seen by
+  mutation, 2026-10-07).
+}

@@ -1,0 +1,59 @@
+meta {
+  name: 28 J2 nfl_extraction refuses (waits until terminal)
+  type: http
+  seq: 28
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns/{{chaos_extract_dag_run_id}}/taskInstances
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForDagRun(bru, "nfl_extraction", bru.getVar("chaos_extract_dag_run_id"));
+  bru.setVar("chaos_extract_run_state", result.state);
+}
+
+tests {
+  test("the run ended failed", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("chaos_extract_run_state")).to.equal("failed");
+  });
+  test("pre_check_ingestion is the one task that failed", function () {
+    const failed = res.getBody().task_instances.filter(t => t.state === "failed").map(t => t.task_id);
+    expect(failed).to.deep.equal(["pre_check_ingestion"]);
+  });
+  test("nothing downstream ran: no Parquet was written and nothing was published", function () {
+    const byId = {};
+    for (const t of res.getBody().task_instances) { byId[t.task_id] = t.state; }
+    for (const id of ["is_utm", "write_parquet_temp", "publish", "record_event"]) {
+      expect(byId[id], id).to.equal("upstream_failed");
+    }
+  });
+}
+
+docs {
+  ## What this proves
+  A stage starts only when the upstream stage succeeded for the same interval. Extraction's pre-check read
+  the FAILED ingestion batch and stopped the run before anything was read, written or published.
+
+  ## Captures
+  - `chaos_extract_run_state` (pre-request)
+
+  ## Consumes
+  - `chaos_extract_dag_run_id` from `J1`
+
+  ## When it fails
+  The run succeeded: the September batch is not FAILED on this stack; run scenario B first.
+}

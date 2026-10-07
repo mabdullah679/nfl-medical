@@ -60,4 +60,33 @@ async function waitForConnector(bru, name, wantedState) {
   return { state: state, waitedMs: Date.now() - started };
 }
 
-module.exports = { waitForDagRun: waitForDagRun, waitForConnector: waitForConnector };
+// Polls a shim check until `done(body)` is true or the poll timeout passes. The
+// request that follows asserts on its own response; this only waits for it.
+async function waitForShim(bru, path, done) {
+  const { timeoutMs, intervalMs } = limits(bru);
+  const url = bru.getEnvVar("shim_url") + path;
+  const started = Date.now();
+  let polls = 0;
+  let satisfied = false;
+  while (true) {
+    let body = null;
+    try {
+      const r = await bru.sendRequest({ method: "GET", url: url, headers: { Accept: "application/json" } });
+      body = r.data;
+    } catch (e) {
+      body = e && e.response && e.response.data;
+    }
+    polls += 1;
+    if (body && done(body)) {
+      satisfied = true;
+      break;
+    }
+    if (Date.now() - started + intervalMs > timeoutMs) {
+      break;
+    }
+    await bru.sleep(Math.min(intervalMs, 2000));
+  }
+  return { satisfied: satisfied, polls: polls, waitedMs: Date.now() - started };
+}
+
+module.exports = { waitForDagRun: waitForDagRun, waitForConnector: waitForConnector, waitForShim: waitForShim };

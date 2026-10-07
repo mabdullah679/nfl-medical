@@ -1,0 +1,72 @@
+meta {
+  name: 20 Logs: the marked line arrived
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{logs_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: Logs_20140328.FilterLogEvents
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: logs
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {
+    "logGroupName": "{{log_group_prefix}}/nfl-shim",
+    "filterPattern": "{{log_probe_token}}",
+    "limit": 50
+  }
+}
+
+script:pre-request {
+  await bru.sleep(Number(bru.getEnvVar("log_ship_wait_ms") || 8000));
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("exactly the line request 19 caused is in the shim's log group", function () {
+    const ev = res.getBody().events;
+    expect(ev, "no event carries the token after log_ship_wait_ms").to.have.lengthOf(1);
+    expect(ev[0].message).to.include("GET /checks?probe=" + bru.getVar("log_probe_token"));
+    expect(ev[0].message).to.include("200");
+  });
+  test("it was shipped after the request was sent, within the wait", function () {
+    const t = res.getBody().events[0].ingestionTime;
+    expect(t).to.be.at.least(Number(bru.getVar("log_probe_sent_ms")) - 1000);
+    expect(t - Number(bru.getVar("log_probe_sent_ms"))).to.be.at.most(Number(bru.getEnvVar("log_ship_wait_ms") || 8000) + 5000);
+  });
+}
+
+docs {
+  ## What this proves
+  Shipping is live, not a stale copy. The line `19` caused seconds ago is found in
+  `{{log_group_prefix}}/nfl-shim` by its token. The pre-request script waits `log_ship_wait_ms` first: the
+  shipper batches for two seconds.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `log_probe_token`, `log_probe_sent_ms` from `19`
+  - `logs_endpoint`, `log_group_prefix`, `log_ship_wait_ms` (environment)
+
+  ## When it fails
+  No event: the shipper is down or behind (`docker logs nfl-logship`), or `19` was not sent first. Raise
+  `log_ship_wait_ms` on a loaded machine.
+}

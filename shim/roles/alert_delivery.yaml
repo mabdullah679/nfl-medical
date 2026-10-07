@@ -1,0 +1,46 @@
+endpoint: /checks/alerts/delivery
+check: alert_delivery
+summary: Whether every event that asked for a notification was delivered to its channel, with the attempts made.
+identity:
+  kind: postgres_role
+  name: nfl_check_alert_delivery
+  scope: >
+    NFL Postgres as the dedicated read-only role nfl_check_alert_delivery. Reads eight
+    columns of observability.pipeline_event and all of observability.alert_delivery.
+    It cannot read an event's message or its interval.
+credential_env: SHIM_ALERT_DELIVERY_PG_DSN
+dependencies:
+  - nfl_postgres
+grants:
+  - "CREATE ROLE nfl_check_alert_delivery LOGIN PASSWORD '<secret>';"
+  - "GRANT CONNECT ON DATABASE nfl TO nfl_check_alert_delivery;"
+  - "GRANT USAGE ON SCHEMA observability TO nfl_check_alert_delivery;"
+  - "ALTER ROLE nfl_check_alert_delivery SET default_transaction_read_only = on;"
+  - "GRANT SELECT (event_id, stage, step, status, event_time, run_id, correlation_id, metrics) ON observability.pipeline_event TO nfl_check_alert_delivery;"
+  - "GRANT SELECT ON observability.alert_delivery TO nfl_check_alert_delivery;"
+grants_rationale: >
+  The verdict joins the events whose metrics ask for a notification to their delivery
+  attempts. metrics is needed for the notify flag and the severity; message and the
+  interval columns are not needed and are not granted.
+local_enforcement: >
+  ENFORCED by Postgres when the DSN in $SHIM_ALERT_DELIVERY_PG_DSN logs in as nfl_check_alert_delivery with
+  exactly the grants above: the role authenticates with its own password, can SELECT
+  only what is listed, and cannot write. The shim refuses to start if that DSN
+  carries any other user, or a user another endpoint also carries. NOT verified by the
+  shim: that the database holds no EXTRA grant for this role; that is the DDL's job
+  (infra/sql) and is audited with \dp, not by this service.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ConnectAsAlertDeliveryRole
+      Effect: Allow
+      Action:
+        - rds-db:connect
+      Resource:
+        - arn:aws:rds-db:${AWS_REGION}:${AWS_ACCOUNT_ID}:dbuser:${NFL_PG_RESOURCE_ID}/nfl_check_alert_delivery
+    - Sid: ReadOwnSecret
+      Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:nfl/shim/alert-delivery-*

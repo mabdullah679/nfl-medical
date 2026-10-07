@@ -19,7 +19,7 @@ ROLES = {"events"}
 EVENTS_CHECK = "events"
 
 Status = Literal["started", "success", "retry", "failed", "skipped"]
-Stage = Literal["replication", "ingestion", "extraction", "reporting", "delivery"]
+Stage = Literal["replication", "ingestion", "extraction", "reporting", "delivery", "platform"]
 
 ALERT = sql.SQL("COALESCE(metrics->>'alert', 'false') = 'true'")
 
@@ -120,7 +120,7 @@ def events(
     ).format(table=table, where=where, alert=ALERT)
     rows_stmt = sql.SQL(
         "SELECT event_id, stage, step, status, interval_start, interval_end, "
-        "       event_time, dag_id, run_id, message, metrics "
+        "       event_time, dag_id, run_id, message, metrics, correlation_id "
         "FROM {table} WHERE {where} ORDER BY event_time DESC, event_id DESC LIMIT %s"
     ).format(table=table, where=where)
 
@@ -154,6 +154,7 @@ def events(
         run_id,
         message,
         metrics,
+        correlation,
     ) in fetched:
         metrics = metrics if isinstance(metrics, dict) else {}
         is_alert = e_status == "failed" and metrics.get("alert") is True
@@ -168,10 +169,13 @@ def events(
                 "event_time": event_time.isoformat() if event_time else None,
                 "dag_id": dag_id,
                 "run_id": run_id,
+                "correlation_id": correlation,
                 "message": message,
                 "alert": is_alert,
                 "severity": metrics.get("severity"),
                 "error_summary": metrics.get("error_summary"),
+                "log_url": metrics.get("log_url"),
+                "log_api_path": metrics.get("log_api_path"),
                 "metrics": metrics,
             }
         )

@@ -1,0 +1,55 @@
+meta {
+  name: 95 K9 The manifest is exactly the original again
+  type: http
+  seq: 95
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{chaos_manifest_key}}
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+script:pre-request {
+  const guards = require("./lib/guards.js");
+  guards.manifestKey(bru);
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the stored manifest equals the one K1 captured, field for field", function () {
+    const m = typeof res.getBody() === "string" ? JSON.parse(res.getBody()) : res.getBody();
+    expect(m).to.deep.equal(bru.getVar("chaos_manifest_original"));
+    expect(m.layers.gold.row_count).to.not.equal(bru.getVar("chaos_manifest_tampered_rows"));
+  });
+}
+
+docs {
+  ## What this proves
+  The restore is proven, not assumed: the manifest in S3 is the one captured before the injection, including
+  every file checksum.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_manifest_key`, `chaos_manifest_original` from `K1`
+  - `chaos_manifest_tampered_rows` from `K2`
+
+  ## When it fails
+  Not equal: `K8` did not succeed. Send `K7` and `K8` again before anything else.
+}

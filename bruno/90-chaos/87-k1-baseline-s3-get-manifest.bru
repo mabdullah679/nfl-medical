@@ -1,0 +1,68 @@
+meta {
+  name: 87 K1 Baseline: S3 GET manifest
+  type: http
+  seq: 87
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{s3_endpoint}}/{{s3_bucket}}/{{chaos_manifest_key}}
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: s3
+  region: {{aws_region}}
+  profileName: 
+}
+
+script:pre-request {
+  bru.setVar("chaos_manifest_original", null);
+  bru.setVar("chaos_manifest_baseline_key", "");
+  const marker = bru.getVar("chaos_marker_key");
+  if (typeof marker !== "string" || !/^[A-Za-z0-9_.\-]+\/_SUCCESS$/.test(marker)) {
+    throw new Error("chaos_marker_key is " + JSON.stringify(marker) + ": send D1 and D2 first");
+  }
+  bru.setVar("chaos_manifest_key", marker.replace(/\/_SUCCESS$/, "/manifest.json"));
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    const m = typeof res.getBody() === "string" ? JSON.parse(res.getBody()) : res.getBody();
+    bru.setVar("chaos_manifest_original", m);
+    bru.setVar("chaos_manifest_baseline_key", bru.getVar("chaos_manifest_key"));
+  }
+}
+
+tests {
+  test("HTTP 200 and the manifest was captured", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("chaos_manifest_baseline_key")).to.equal(bru.getVar("chaos_manifest_key"));
+  });
+  test("it declares a gold layer with rows", function () {
+    expect(bru.getVar("chaos_manifest_original").layers.gold.row_count).to.be.a("number").above(0);
+  });
+}
+
+docs {
+  ## What this proves
+  Baseline for scenario K: the published manifest of the clean interval, captured whole so `K10` can prove
+  the restore returned exactly it.
+
+  ## Captures
+  - `chaos_manifest_key` (pre-request)
+  - `chaos_manifest_original`
+  - `chaos_manifest_baseline_key`
+
+  ## Consumes
+  - `chaos_marker_key` from `D2`
+
+  ## When it fails
+  404: extraction has not published the clean interval; run `30-extraction`.
+}

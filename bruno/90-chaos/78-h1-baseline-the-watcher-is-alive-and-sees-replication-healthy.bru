@@ -1,0 +1,61 @@
+meta {
+  name: 78 H1 Baseline: the watcher is alive and sees replication healthy
+  type: http
+  seq: 78
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/monitor
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  bru.setVar("chaos_watch_baseline_ok", false);
+  bru.setVar("chaos_watch_incident", "");
+  await poll.waitForShim(bru, "/checks/monitor", function (b) {
+    return b.measured && b.measured.watcher_alive && b.measured.probes.connector_status.level === "ok";
+  });
+}
+
+script:post-response {
+  const m = res.getBody() && res.getBody().measured;
+  bru.setVar("chaos_watch_baseline_ok", !!(m && m.watcher_alive && m.probes.connector_status.level === "ok"));
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the watcher is alive and its connector probe is ok", function () {
+    const m = res.getBody().measured;
+    expect(m.watcher_alive, res.getBody().summary).to.equal(true);
+    expect(m.probes.connector_status.level).to.equal("ok");
+    expect(m.probes.connector_status.incident).to.equal(null);
+    expect(bru.getVar("chaos_watch_baseline_ok")).to.equal(true);
+  });
+}
+
+docs {
+  ## What this proves
+  Baseline for scenario H. The watcher is sampling and reports the connectors healthy, so the red state in
+  `H3` is caused by `H2` and not left over from something else. The pre-request script waits for the probe
+  to settle, because scenario G resumed a connector seconds ago.
+
+  ## Captures
+  - `chaos_watch_baseline_ok`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  Not ok after the poll timeout: a connector is still paused from an earlier scenario; send `A7` and `G6`. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

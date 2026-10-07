@@ -1,0 +1,69 @@
+meta {
+  name: 89 K3 Trigger nfl_reporting against the inconsistent manifest
+  type: http
+  seq: 89
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+post {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+body:json {
+  {
+    "dag_run_id": "{{new_dag_run_id}}",
+    "conf": {
+      "interval_start": "{{interval_start_ts}}",
+      "interval_end": "{{interval_end_ts}}"
+    }
+  }
+}
+
+script:pre-request {
+  const stamp = new Date().toISOString().replace(/[-:.]/g, "");
+  bru.setVar("new_dag_run_id", "bruno_chaos_gate_" + stamp);
+  bru.setVar("chaos_gate_dag_run_id", "");
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("chaos_gate_dag_run_id", res.getBody().dag_run_id);
+  }
+}
+
+tests {
+  test("Airflow accepted the run (HTTP 200)", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("chaos_gate_dag_run_id")).to.equal(bru.getVar("new_dag_run_id"));
+  });
+}
+
+docs {
+  ## What this proves
+  Starts reporting for the clean interval while its manifest is inconsistent. The run id starts with
+  `bruno_chaos_gate_`, which is how `60-observability/12` recognises its alert as injected.
+
+  ## Captures
+  - `chaos_gate_dag_run_id`
+  - new_dag_run_id (pre-request)
+
+  ## Consumes
+  - `interval_start_ts`, `interval_end_ts` (environment)
+
+  ## When it fails
+  401: `airflow_password` was not supplied.
+}

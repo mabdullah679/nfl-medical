@@ -38,7 +38,7 @@ scripts/up.sh
 2. `scripts/init-env.sh` writes `infra/nfl.env` with freshly generated secrets (never printed) and the
    SFTP host keys and checker key pair under `infra/keys/sftp/`. Run it once. It refuses to overwrite an
    existing env file.
-3. `scripts/up.sh` creates the S3 bucket if absent, builds and starts the nine containers, waits for
+3. `scripts/up.sh` creates the S3 bucket if absent, builds and starts the twelve containers, waits for
    health, applies schemas, roles and grants, registers both connectors, and calls every check once to
    prove each identity can log in. **Exit 0 and the closing line "Stack is up" mean all of that
    happened.** Anything else is a failure; see section 5.
@@ -147,7 +147,10 @@ SFTP. Reruns are idempotent: same row counts, same Parquet, same report checksum
 | normal (`-r --exclude-tags chaos`) | 100 of 100 | 309 of 309 | 49 |
 
 After chaos, checked outside Bruno: both connectors and their tasks RUNNING, the August `_SUCCESS`
-marker present with 0 bytes, nine containers healthy.
+marker present with 0 bytes, nine containers healthy (twelve since 2026-10-07).
+
+Measured again 2026-10-07 on a wiped, cold-started stack: normal 109 of 109 requests and 344 of 344 tests,
+chaos 86 of 86 and 233 of 233, normal again 109 of 109 and 344 of 344.
 
 Then `reset.sh -y`, `up.sh` and the normal run once more on the cold stack: 100 of 100, 309 of 309.
 
@@ -255,7 +258,8 @@ curl -s "localhost:8096/checks/events?interval_start=20260801&interval_end=20260
 
 ## 7. Failure injection
 
-`90-chaos` holds seven scenarios. Each request that breaks something has `INJECT` in its name and is
+`90-chaos` holds ten scenarios (A to G below; H, J and K, added 2026-10-07, are described in
+`bruno/README.md`). Each request that breaks something has `INJECT` in its name and is
 followed by one with `RESTORE`. A folder run always reaches the restores, because the CLI does not stop
 at a failed test. Run it only after a green normal run.
 
@@ -315,9 +319,31 @@ curl -s "localhost:8096/checks/extraction/s3-marker?interval_start=20260801&inte
 docker ps --filter name=nfl- --format '{{.Names}} {{.Status}}'
 ```
 
-Both connectors and their tasks RUNNING, both checks `ok: true`, nine containers healthy.
+Both connectors and their tasks RUNNING, both checks `ok: true`, twelve containers healthy.
 
-## 8. Shut down
+## 8. Reading alerts, logs and the watcher
+
+| Question | Where |
+|---|---|
+| Did anything alert, and was it delivered? | `curl -s 'localhost:8096/checks/alerts/delivery?since_minutes=1440'`, or `60-observability/15` |
+| What did Operations receive? | open `http://localhost:8094` in a browser: every alert email, newest first |
+| What happened in one attempt, start to finish? | `curl -s 'localhost:8096/checks/trace?correlation_id=<id>'`, or `60-observability/14`. The id is the `conf.correlation_id` the triggers passed; a run triggered without one uses `nfl_<start>_<end>` |
+| Is anything watching right now? | `curl -s localhost:8096/checks/monitor`, or `60-observability/16` |
+| What did a container log? | CloudWatch Logs on floci, group `/nfl/<container>`: `60-observability/18` to `22`. `docker logs <container>` still works |
+| What did a task log? | group `/nfl/airflow-tasks`, stream `<dag id>`, each line prefixed `<task> try=<n> run=<run id>`. Filter by the correlation id to get one attempt across all three DAGs (`60-observability/21`) |
+
+An alert email states the severity, stage, step, run id, interval, error summary, the Airflow link to the
+failed task's log and the correlation id. Severities: `critical` for a task that exhausted its retries, a
+connector that is not RUNNING, an unhealthy orchestrator or a heartbeat older than twice its limit;
+`warning` for a heartbeat over its limit; `info` for a recovery.
+
+If `/checks/alerts/delivery` shows `undelivered`: `docker logs nfl-watch` gives the mail server's answer.
+The watcher retries after 30 s, 60 s, 120 s and so on up to ten attempts (about an hour), then the alert is
+`abandoned` and stays red on the check.
+
+`scripts/reset.sh` also empties the inbox and deletes the `/nfl/*` log groups.
+
+## 9. Shut down
 
 ```bash
 scripts/down.sh

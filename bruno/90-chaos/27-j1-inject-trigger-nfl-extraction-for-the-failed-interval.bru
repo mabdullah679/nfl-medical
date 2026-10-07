@@ -1,0 +1,74 @@
+meta {
+  name: 27 J1 INJECT trigger nfl_extraction for the failed interval
+  type: http
+  seq: 27
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+post {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+body:json {
+  {
+    "dag_run_id": "{{new_dag_run_id}}",
+    "conf": {
+      "interval_start": "{{chaos_interval_start_ts}}",
+      "interval_end": "{{chaos_interval_end_ts}}"
+    }
+  }
+}
+
+script:pre-request {
+  const stamp = new Date().toISOString().replace(/[-:.]/g, "");
+  bru.setVar("new_dag_run_id", "bruno_chaos_extract_" + stamp);
+  bru.setVar("chaos_extract_dag_run_id", "");
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("chaos_extract_dag_run_id", res.getBody().dag_run_id);
+  }
+}
+
+tests {
+  test("Airflow accepted the run (HTTP 200)", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("chaos_extract_dag_run_id")).to.equal(bru.getVar("new_dag_run_id"));
+  });
+  test("the run is for the chaos interval, whose ingestion batch scenario B left FAILED", function () {
+    expect(res.getBody().conf.interval_start).to.equal(bru.getEnvVar("chaos_interval_start_ts"));
+    expect(res.getBody().conf.interval_end).to.equal(bru.getEnvVar("chaos_interval_end_ts"));
+  });
+}
+
+docs {
+  ## What this proves
+  Starts extraction for an interval whose ingestion failed (scenario B). Nothing is broken by this request
+  and nothing needs restoring: the run is expected to refuse at its pre-check and write nothing to S3.
+
+  ## Captures
+  - `chaos_extract_dag_run_id`
+  - new_dag_run_id (pre-request)
+
+  ## Consumes
+  - `chaos_interval_start_ts`, `chaos_interval_end_ts` (environment)
+  - Scenario B must have run on this stack at least once, so that the September batch is FAILED.
+
+  ## When it fails
+  401: `airflow_password` was not supplied. 404: the DAG is not loaded.
+}

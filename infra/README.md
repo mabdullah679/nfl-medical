@@ -246,7 +246,7 @@ Everything below was executed on 2026-10-04 (UTC) against the uncommitted tree.
   take (no env file, no keys), with the S3 bucket deleted first so the
   bootstrap had to create it: `reset.sh -y` 6s, `init-env.sh` 1s, `up.sh` 103s,
   exit 0. Of the 103s, 60s is the wait for Kafka Connect's first offset commit.
-- After each: 9 containers healthy, both connectors RUNNING, staging
+- After each: 9 containers healthy (12 since 2026-10-07, with `nfl-watch`, `nfl-mail` and `nfl-logship`), both connectors RUNNING, staging
   122 / 203 / 152 rows equal to MySQL, heartbeat landing; August
   (`nfl_ingestion`, `nfl_extraction`, `nfl_reporting` via REST, 27s) all
   success on try 1, 8 objects in S3, the report delivered to SFTP under its

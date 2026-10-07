@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS observability.pipeline_event (
   metrics         JSONB       NOT NULL DEFAULT '{}'::jsonb,
   message         TEXT,
   CONSTRAINT ck_pipeline_event_stage
-    CHECK (stage IN ('replication','ingestion','extraction','reporting','delivery')),
+    CHECK (stage IN ('replication','ingestion','extraction','reporting','delivery','platform')),
   -- 'failed' is terminal for the attempt. A gate that will be tried again
   -- writes 'retry', so a retried-then-successful stage is not read as failed.
   CONSTRAINT ck_pipeline_event_status
@@ -42,3 +42,78 @@ CREATE INDEX IF NOT EXISTS ix_obs_event_interval
   ON observability.pipeline_event (interval_start, stage, event_time);
 CREATE INDEX IF NOT EXISTS ix_obs_event_run
   ON observability.pipeline_event (run_id);
+
+-- ---------------------------------------------------------------------------
+-- Correlation: one id carried by every event of one pipeline attempt, across
+-- the three DAGs and the watcher. The caller passes it as conf.correlation_id
+-- to each trigger; a run without one gets nfl_<start>_<end>, the thread of its
+-- interval. Rows written before this column existed keep NULL.
+-- ---------------------------------------------------------------------------
+ALTER TABLE observability.pipeline_event
+  ADD COLUMN IF NOT EXISTS correlation_id TEXT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_pipeline_event_correlation') THEN
+    -- Letters, digits and underscore only: the same token is a CloudWatch Logs
+    -- filter pattern, which needs quoting for anything else.
+    ALTER TABLE observability.pipeline_event
+      ADD CONSTRAINT ck_pipeline_event_correlation
+      CHECK (correlation_id ~ '^[A-Za-z0-9_]{8,96}$');
+  END IF;
+END $$;
+
+-- 'platform' is not a pipeline stage: it is where the watcher records the
+-- health of what runs the stages (the orchestrator). /checks/lineage counts
+-- only the five stages.
+ALTER TABLE observability.pipeline_event DROP CONSTRAINT IF EXISTS ck_pipeline_event_stage;
+ALTER TABLE observability.pipeline_event
+  ADD CONSTRAINT ck_pipeline_event_stage
+  CHECK (stage IN ('replication','ingestion','extraction','reporting','delivery','platform'));
+
+CREATE INDEX IF NOT EXISTS ix_obs_event_correlation
+  ON observability.pipeline_event (correlation_id, event_time);
+
+-- ---------------------------------------------------------------------------
+-- Watcher samples: what nfl-watch measured on each tick, whether or not anyone
+-- asked. A gap in this series is itself the signal that the watcher stopped.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS observability.monitor_sample (
+  sample_id    BIGSERIAL   PRIMARY KEY,
+  sampled_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  probe        TEXT        NOT NULL,
+  -- NULL: the probe could not run, which is neither healthy nor breached.
+  healthy      BOOLEAN,
+  value        DOUBLE PRECISION,
+  threshold    DOUBLE PRECISION,
+  detail       JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  CONSTRAINT ck_monitor_sample_probe
+    CHECK (probe IN ('replication_heartbeat','connector_status','orchestrator'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_obs_monitor_probe_time
+  ON observability.monitor_sample (probe, sampled_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Alert delivery: one row per attempt to hand an alert to a channel. An alert
+-- with no 'sent' row here was recorded but reached nobody.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS observability.alert_delivery (
+  delivery_id   BIGSERIAL   PRIMARY KEY,
+  event_id      BIGINT      NOT NULL REFERENCES observability.pipeline_event (event_id),
+  channel       TEXT        NOT NULL,
+  recipients    TEXT        NOT NULL,
+  status        TEXT        NOT NULL,
+  attempt       INTEGER     NOT NULL,
+  attempted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  message_id    TEXT,
+  detail        TEXT,
+  CONSTRAINT ck_alert_delivery_status CHECK (status IN ('sent','failed')),
+  CONSTRAINT ck_alert_delivery_attempt CHECK (attempt >= 1),
+  CONSTRAINT uq_alert_delivery_attempt UNIQUE (event_id, channel, attempt)
+);
+
+-- At most one successful delivery per alert and channel: a second dispatcher,
+-- or a retry racing a slow send, cannot produce a duplicate notification row.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_delivery_sent
+  ON observability.alert_delivery (event_id, channel) WHERE status = 'sent';

@@ -1,0 +1,68 @@
+meta {
+  name: 16 Shim monitor: the watcher is sampling
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{shim_url}}/checks/monitor
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the watcher is alive: every probe has a sample younger than the limit", function () {
+    const m = res.getBody().measured;
+    expect(m.watcher_alive, res.getBody().summary).to.equal(true);
+    expect(m.probes_missing).to.have.lengthOf(0);
+    expect(m.probes_stale).to.have.lengthOf(0);
+    for (const p of ["replication_heartbeat", "connector_status", "orchestrator"]) {
+      expect(m.probes[p].sample_age_seconds, p).to.be.at.most(res.getBody().threshold.max_sample_age_seconds);
+    }
+  });
+  test("it sampled repeatedly without being asked: several samples per probe in the last 5 minutes", function () {
+    for (const p of Object.values(res.getBody().measured.probes)) {
+      expect(p.samples_last_5_minutes).to.be.at.least(3);
+    }
+  });
+  test("verdict is pass: each probe ran and is ok", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    for (const [name, p] of Object.entries(res.getBody().measured.probes)) {
+      expect(p.probe_ran, name).to.equal(true);
+      expect(p.level, name + ": " + p.summary).to.equal("ok");
+    }
+  });
+  test("replication lag was measured against its threshold", function () {
+    const hb = res.getBody().measured.probes.replication_heartbeat;
+    expect(hb.value).to.be.a("number");
+    expect(hb.threshold).to.be.a("number").above(0);
+    expect(hb.value).to.be.at.most(hb.threshold);
+  });
+}
+
+docs {
+  ## What this proves
+  Something watches without being asked. `nfl-watch` measures the end-to-end replication heartbeat, the two
+  connectors and the orchestrator's own health every tick and appends each measurement to
+  `observability.monitor_sample`. This request did not cause any of those samples; it reads the newest of
+  each and how many were taken in the last five minutes. A watcher that has stopped is a red verdict
+  (`watcher_alive: false`), not an empty answer. Non-HTTP made sendable: SQL run by the read-only
+  `nfl_check_monitor` role.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+      `watcher_alive: false`: `docker ps` for `nfl-watch`, then `docker logs nfl-watch`. A probe that is not
+      `ok` names its reason in `summary`; `90-chaos` scenario H shows what that looks like on purpose.
+      HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

@@ -1,0 +1,70 @@
+meta {
+  name: 93 K7 RESTORE trigger nfl_extraction to republish the manifest
+  type: http
+  seq: 93
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+post {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+body:json {
+  {
+    "dag_run_id": "{{new_dag_run_id}}",
+    "conf": {
+      "interval_start": "{{interval_start_ts}}",
+      "interval_end": "{{interval_end_ts}}"
+    }
+  }
+}
+
+script:pre-request {
+  const stamp = new Date().toISOString().replace(/[-:.]/g, "");
+  bru.setVar("new_dag_run_id", "bruno_chaos_rebuild_" + stamp);
+  bru.setVar("chaos_rebuild_dag_run_id", "");
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("chaos_rebuild_dag_run_id", res.getBody().dag_run_id);
+  }
+}
+
+tests {
+  test("Airflow accepted the run (HTTP 200)", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("chaos_rebuild_dag_run_id")).to.equal(bru.getVar("new_dag_run_id"));
+  });
+}
+
+docs {
+  ## What this proves
+  RESTORE for `K2`. Extraction is deterministic and its publish step rewrites `manifest.json`, so running it
+  again for the interval puts the true manifest back without this collection writing a byte of it. Safe to
+  send at any time.
+
+  ## Captures
+  - `chaos_rebuild_dag_run_id`
+  - new_dag_run_id (pre-request)
+
+  ## Consumes
+  - `interval_start_ts`, `interval_end_ts` (environment)
+
+  ## When it fails
+  401: `airflow_password` was not supplied.
+}

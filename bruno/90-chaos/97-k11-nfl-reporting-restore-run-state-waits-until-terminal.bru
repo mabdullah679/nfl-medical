@@ -1,0 +1,46 @@
+meta {
+  name: 97 K11 nfl_reporting restore run state (waits until terminal)
+  type: http
+  seq: 97
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns/{{chaos_rereport_dag_run_id}}
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  await poll.waitForDagRun(bru, "nfl_reporting", bru.getVar("chaos_rereport_dag_run_id"));
+}
+
+tests {
+  test("the restore run succeeded", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().state).to.equal("success");
+  });
+}
+
+docs {
+  ## What this proves
+  Reporting passes its gate again with the true manifest.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_rereport_dag_run_id` from `K10`
+
+  ## When it fails
+  `failed`: `K9` must be green first.
+}

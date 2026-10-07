@@ -1,0 +1,46 @@
+meta {
+  name: 79 H2 INJECT pause the Debezium connector, and trigger nothing
+  type: http
+  seq: 79
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+put {
+  url: {{connect_url}}/connectors/{{source_connector_name}}/pause
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  if (bru.getVar("chaos_watch_baseline_ok") !== true) {
+    throw new Error("refusing to pause the connector: H1 did not prove the watcher alive and the connector probe ok first");
+  }
+  bru.setVar("chaos_watch_injected_ms", Date.now());
+}
+
+tests {
+  test("Kafka Connect accepted the pause (HTTP 202)", function () {
+    expect(res.getStatus()).to.equal(202);
+  });
+}
+
+docs {
+  ## What this proves
+  DESTRUCTIVE: stops replication. The matching restore is `H7 RESTORE resume the Debezium connector`; send
+  it even if a request in between fails. Unlike scenario A, nothing after this asks the pipeline to run: no
+  DAG is triggered and no check is asked for the connector's state. Whatever raises the alert has to notice
+  on its own.
+
+  ## Captures
+  - `chaos_watch_injected_ms` (pre-request)
+
+  ## Consumes
+  - `chaos_watch_baseline_ok` from `H1`
+  - `source_connector_name`, `connect_url` (environment)
+
+  ## When it fails
+  404: the connector name is wrong. 409: a rebalance is in progress, send again.
+}

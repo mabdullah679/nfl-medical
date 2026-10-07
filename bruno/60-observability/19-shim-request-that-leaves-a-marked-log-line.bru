@@ -1,0 +1,42 @@
+meta {
+  name: 19 Shim request that leaves a marked log line
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{shim_url}}/checks?probe={{log_probe_token}}
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  bru.setVar("log_probe_token", "nflprobe" + Date.now());
+  bru.setVar("log_probe_sent_ms", Date.now());
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the request carried the token generated for it", function () {
+    expect(req.getUrl()).to.include("probe=" + bru.getVar("log_probe_token"));
+    expect(bru.getVar("log_probe_token")).to.match(/^nflprobe\d+$/);
+  });
+}
+
+docs {
+  ## What this proves
+  Sets up `20`. The shim logs every request line, so asking it for its index with a one-off token in the
+  query string writes a line no earlier request could have written. The shim ignores the extra parameter.
+
+  ## Captures
+  - `log_probe_token`
+  - `log_probe_sent_ms`
+
+  ## Consumes
+  Environment variables only.
+
+  ## When it fails
+  A non-200 here is the shim itself: `docker logs nfl-shim`.
+}

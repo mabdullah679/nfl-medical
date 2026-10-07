@@ -9,6 +9,11 @@
 -- nfl_check_freshness  | load timestamps + heartbeat                                 | /checks/ingestion/freshness
 -- nfl_check_lineage    | 5 columns of observability.pipeline_event                   | /checks/lineage
 -- nfl_check_events     | observability.pipeline_event (whole rows)                   | /checks/events
+-- nfl_check_trace      | pipeline_event (whole rows) + alert_delivery                | /checks/trace
+-- nfl_check_alert_delivery | 8 columns of pipeline_event + alert_delivery            | /checks/alerts/delivery
+-- nfl_check_monitor    | observability.monitor_sample                                | /checks/monitor
+-- nfl_monitor          | reads the heartbeat; writes monitor_sample; INSERT alerts   | nfl-watch (probes)
+-- nfl_notifier         | reads pipeline_event; reads/appends alert_delivery          | nfl-watch (alert dispatch)
 --
 -- The grant list of each nfl_check_* role is the `grants` list of the matching
 -- shim/roles/*.yaml; the two must be changed together.
@@ -24,7 +29,9 @@ DECLARE r text;
 BEGIN
   FOREACH r IN ARRAY ARRAY['nfl_stub_reader', 'nfl_events', 'nfl_check_reconcile',
                            'nfl_check_quality', 'nfl_check_freshness',
-                           'nfl_check_lineage', 'nfl_check_events'] LOOP
+                           'nfl_check_lineage', 'nfl_check_events', 'nfl_check_trace',
+                           'nfl_check_alert_delivery', 'nfl_check_monitor',
+                           'nfl_monitor', 'nfl_notifier'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('CREATE ROLE %I LOGIN', r);
     END IF;
@@ -49,6 +56,11 @@ ALTER ROLE nfl_check_quality   PASSWORD 'CHANGEME_pg_check_quality';
 ALTER ROLE nfl_check_freshness PASSWORD 'CHANGEME_pg_check_freshness';
 ALTER ROLE nfl_check_lineage   PASSWORD 'CHANGEME_pg_check_lineage';
 ALTER ROLE nfl_check_events    PASSWORD 'CHANGEME_pg_check_events';
+ALTER ROLE nfl_check_trace     PASSWORD 'CHANGEME_pg_check_trace';
+ALTER ROLE nfl_check_alert_delivery PASSWORD 'CHANGEME_pg_check_alert_delivery';
+ALTER ROLE nfl_check_monitor   PASSWORD 'CHANGEME_pg_check_monitor';
+ALTER ROLE nfl_monitor         PASSWORD 'CHANGEME_pg_monitor';
+ALTER ROLE nfl_notifier        PASSWORD 'CHANGEME_pg_notifier';
 
 ALTER ROLE nfl_stub_reader     SET default_transaction_read_only = on;
 ALTER ROLE nfl_check_reconcile SET default_transaction_read_only = on;
@@ -56,6 +68,9 @@ ALTER ROLE nfl_check_quality   SET default_transaction_read_only = on;
 ALTER ROLE nfl_check_freshness SET default_transaction_read_only = on;
 ALTER ROLE nfl_check_lineage   SET default_transaction_read_only = on;
 ALTER ROLE nfl_check_events    SET default_transaction_read_only = on;
+ALTER ROLE nfl_check_trace     SET default_transaction_read_only = on;
+ALTER ROLE nfl_check_alert_delivery SET default_transaction_read_only = on;
+ALTER ROLE nfl_check_monitor   SET default_transaction_read_only = on;
 
 -- DMS stub: counts landed rows of the replicated tables. Not the heartbeat.
 GRANT USAGE ON SCHEMA staging TO nfl_stub_reader;
@@ -104,3 +119,36 @@ GRANT SELECT (stage, status, event_time, interval_start, interval_end) ON observ
 -- /checks/events
 GRANT USAGE ON SCHEMA observability TO nfl_check_events;
 GRANT SELECT ON observability.pipeline_event TO nfl_check_events;
+
+-- /checks/trace
+GRANT USAGE ON SCHEMA observability TO nfl_check_trace;
+GRANT SELECT ON observability.pipeline_event TO nfl_check_trace;
+GRANT SELECT ON observability.alert_delivery TO nfl_check_trace;
+
+-- /checks/alerts/delivery
+GRANT USAGE ON SCHEMA observability TO nfl_check_alert_delivery;
+GRANT SELECT (event_id, stage, step, status, event_time, run_id, correlation_id, metrics)
+  ON observability.pipeline_event TO nfl_check_alert_delivery;
+GRANT SELECT ON observability.alert_delivery TO nfl_check_alert_delivery;
+
+-- /checks/monitor
+GRANT USAGE ON SCHEMA observability TO nfl_check_monitor;
+GRANT SELECT ON observability.monitor_sample TO nfl_check_monitor;
+
+-- Watcher probes. Reads the end-to-end heartbeat, appends samples and reads
+-- them back to see a state change, deletes samples past retention, and
+-- appends the alert or recovery event of a change. It cannot read
+-- pipeline_event and cannot touch a replicated table or utm.
+GRANT USAGE ON SCHEMA staging, observability TO nfl_monitor;
+GRANT SELECT (source_name, beat_at) ON staging.replication_heartbeat TO nfl_monitor;
+GRANT SELECT, INSERT, DELETE ON observability.monitor_sample TO nfl_monitor;
+GRANT USAGE ON SEQUENCE observability.monitor_sample_sample_id_seq TO nfl_monitor;
+GRANT INSERT ON observability.pipeline_event TO nfl_monitor;
+GRANT USAGE ON SEQUENCE observability.pipeline_event_event_id_seq TO nfl_monitor;
+
+-- Alert dispatcher. Reads the events that ask for a notification and appends
+-- the outcome of each attempt. It cannot change or delete either table.
+GRANT USAGE ON SCHEMA observability TO nfl_notifier;
+GRANT SELECT ON observability.pipeline_event TO nfl_notifier;
+GRANT SELECT, INSERT ON observability.alert_delivery TO nfl_notifier;
+GRANT USAGE ON SEQUENCE observability.alert_delivery_delivery_id_seq TO nfl_notifier;

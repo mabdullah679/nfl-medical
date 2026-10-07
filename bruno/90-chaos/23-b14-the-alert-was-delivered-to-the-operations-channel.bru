@@ -1,0 +1,64 @@
+meta {
+  name: 23 B14 The alert was delivered to the Operations channel
+  type: http
+  seq: 23
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/alerts/delivery?since_minutes=30&run_id={{chaos_dag_run_id}}
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const path = "/checks/alerts/delivery?since_minutes=30&run_id=" + encodeURIComponent(bru.getVar("chaos_dag_run_id"));
+  const result = await poll.waitForShim(bru, path, function (b) { return b.ok === true; });
+  bru.setVar("chaos_delivery_waited_ms", result.waitedMs);
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass: the alert of this run was delivered", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    const ev = res.getBody().measured.events;
+    expect(ev).to.have.lengthOf(1);
+    expect(ev[0].event_id).to.equal(bru.getVar("chaos_alert_event_id"));
+    expect(ev[0].delivery_state).to.equal("sent");
+  });
+  test("to both Operations and Production Support, on the first attempt", function () {
+    const e = res.getBody().measured.events[0];
+    expect(e.recipients).to.include("operations@");
+    expect(e.recipients).to.include("production-support@");
+    expect(e.attempts).to.equal(1);
+  });
+  test("within a minute of the failure", function () {
+    expect(res.getBody().measured.events[0].seconds_to_delivery).to.be.a("number").at.most(60);
+  });
+}
+
+docs {
+  ## What this proves
+  The alert left the database. `nfl-watch` picked the row up, sent it over SMTP to the Operations and
+  Production Support addresses, and recorded the attempt; `seconds_to_delivery` is the measured time from
+  the failure event to the accepted send. The pre-request script waits for the delivery row; the test then
+  asserts it. Nobody is paged: the recipient is the local inbox (`B15`).
+
+  ## Captures
+  - `chaos_delivery_waited_ms` (pre-request)
+
+  ## Consumes
+  - `chaos_dag_run_id` from `B1`
+  - `chaos_alert_event_id` from `B12`
+
+  ## When it fails
+  `pending` after the poll timeout or `undelivered`: `docker logs nfl-watch`. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

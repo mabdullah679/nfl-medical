@@ -1,0 +1,59 @@
+meta {
+  name: 29 J3 Shim events show the extraction failure alert, delivered
+  type: http
+  seq: 29
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/alerts/delivery?since_minutes=30&run_id={{chaos_extract_dag_run_id}}
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const path = "/checks/alerts/delivery?since_minutes=30&run_id=" + encodeURIComponent(bru.getVar("chaos_extract_dag_run_id"));
+  await poll.waitForShim(bru, path, function (b) { return b.ok === true; });
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the failed extraction run raised exactly one alert, at the pre-check", function () {
+    const ev = res.getBody().measured.events;
+    expect(ev).to.have.lengthOf(1);
+    expect(ev[0].stage).to.equal("extraction");
+    expect(ev[0].step).to.equal("pre_check_ingestion");
+    expect(ev[0].status).to.equal("failed");
+    expect(ev[0].severity).to.equal("critical");
+  });
+  test("and it was delivered to the Operations channel within a minute", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    const e = res.getBody().measured.events[0];
+    expect(e.delivery_state).to.equal("sent");
+    expect(e.seconds_to_delivery).to.be.a("number").at.most(60);
+  });
+}
+
+docs {
+  ## What this proves
+  An extraction failure alerts Operations. This is the third of the four alert points of the specification
+  (ingestion failure is `B11`, the reporting pre-check is `D11`, the report process is `K6`). The alert row
+  comes from the same failure hook all three DAGs share, and it was delivered.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_extract_dag_run_id` from `J1`
+
+  ## When it fails
+  No event for the run: the failure hook did not fire for `nfl_extraction`. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

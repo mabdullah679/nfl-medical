@@ -27,7 +27,8 @@ body:json {
     "dag_run_id": "{{new_dag_run_id}}",
     "conf": {
       "interval_start": "{{interval_start_ts}}",
-      "interval_end": "{{interval_end_ts}}"
+      "interval_end": "{{interval_end_ts}}",
+      "correlation_id": "{{correlation_id}}"
     }
   }
 }
@@ -35,6 +36,9 @@ body:json {
 script:pre-request {
   const stamp = new Date().toISOString().replace(/[-:.]/g, "");
   bru.setVar("new_dag_run_id", "bruno_reporting_" + stamp);
+  if (!bru.getVar("correlation_id")) {
+    bru.setVar("correlation_id", "bruno_" + stamp);
+  }
 }
 
 script:post-response {
@@ -44,6 +48,10 @@ script:post-response {
 }
 
 tests {
+  test("the run carries this attempt's correlation id", function () {
+    expect(res.getBody().conf.correlation_id).to.equal(bru.getVar("correlation_id"));
+    expect(res.getBody().conf.correlation_id).to.match(/^[A-Za-z0-9_]{8,96}$/);
+  });
   test("Airflow accepted the run (HTTP 200)", function () {
     expect(res.getStatus()).to.equal(200);
   });
@@ -71,6 +79,7 @@ docs {
   identical content does not deliver twice.
 
   ## Captures
+  - `correlation_id` (pre-request), only when no earlier trigger set one
   - `reporting_dag_run_id`
   - new_dag_run_id (pre-request, used only by this request's body)
 

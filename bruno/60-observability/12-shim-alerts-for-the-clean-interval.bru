@@ -12,7 +12,8 @@ get {
 
 script:post-response {
   const ev = (res.getBody() && res.getBody().measured && res.getBody().measured.events) || [];
-  bru.setVar("clean_interval_injected_alert_count", ev.filter(e => String(e.run_id).startsWith("bruno_chaos_marker_")).length);
+  const injected = e => /^bruno_chaos_(marker|gate)_/.test(String(e.run_id));
+  bru.setVar("clean_interval_injected_alert_count", ev.filter(injected).length);
 }
 
 tests {
@@ -31,7 +32,7 @@ tests {
         expect(res.getBody().measured.counts.alerts).to.equal(res.getBody().measured.counts.matched);
       });
       test("zero alerts on the clean interval, other than those 90-chaos injected on purpose", function () {
-        const real = res.getBody().measured.events.filter(e => !String(e.run_id).startsWith("bruno_chaos_marker_"));
+        const real = res.getBody().measured.events.filter(e => !/^bruno_chaos_(marker|gate)_/.test(String(e.run_id)));
         const named = real.map(e => e.run_id + " " + e.stage + "/" + e.step + ": " + e.error_summary).join(" | ");
     expect(real.length, "unexplained alert(s): " + named).to.equal(0);
       });
@@ -46,9 +47,10 @@ docs {
   ## What this proves
   The clean interval raised no Operations alert. `alerts_only=true` returns only rows with
   `metrics.alert = true`. Asserted: every alert row for this interval, if there is any, belongs to a run
-  whose id starts with `bruno_chaos_marker_`, the run `90-chaos` scenario D fails on purpose for this
-  interval. No other chaos run is excused: an alert from the restore run `bruno_chaos_restore_*`, which is
-  meant to succeed, fails this request like any other alert row and is named in the failure message. The
+  whose id starts with `bruno_chaos_marker_` or `bruno_chaos_gate_`, the two runs `90-chaos` fails on purpose
+  for this interval (scenario D, missing marker; scenario K, a manifest that disagrees with the report). No
+  other chaos run is excused: an alert from a restore run (`bruno_chaos_restore_*`, `bruno_chaos_rebuild_*`,
+  `bruno_chaos_rereport_*`), which is meant to succeed, fails this request like any other alert row and is named in the failure message. The
   number of matched alerts must equal the number of injected ones. Before `90-chaos` has ever run, the list is empty, and
   `ok: false` here is the good answer: on this endpoint `ok` means "rows matched".
 

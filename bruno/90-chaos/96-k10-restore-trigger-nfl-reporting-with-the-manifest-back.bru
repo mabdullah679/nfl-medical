@@ -1,0 +1,69 @@
+meta {
+  name: 96 K10 RESTORE trigger nfl_reporting with the manifest back
+  type: http
+  seq: 96
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+post {
+  url: {{airflow_url}}/api/v1/dags/nfl_reporting/dagRuns
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+body:json {
+  {
+    "dag_run_id": "{{new_dag_run_id}}",
+    "conf": {
+      "interval_start": "{{interval_start_ts}}",
+      "interval_end": "{{interval_end_ts}}"
+    }
+  }
+}
+
+script:pre-request {
+  const stamp = new Date().toISOString().replace(/[-:.]/g, "");
+  bru.setVar("new_dag_run_id", "bruno_chaos_rereport_" + stamp);
+  bru.setVar("chaos_rereport_dag_run_id", "");
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("chaos_rereport_dag_run_id", res.getBody().dag_run_id);
+  }
+}
+
+tests {
+  test("Airflow accepted the run (HTTP 200)", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(bru.getVar("chaos_rereport_dag_run_id")).to.equal(bru.getVar("new_dag_run_id"));
+  });
+}
+
+docs {
+  ## What this proves
+  Second half of the restore: the clean interval's latest reporting outcome is the failure `K3` caused, so
+  reporting is run once more to leave the interval green.
+
+  ## Captures
+  - `chaos_rereport_dag_run_id`
+  - new_dag_run_id (pre-request)
+
+  ## Consumes
+  - `interval_start_ts`, `interval_end_ts` (environment)
+
+  ## When it fails
+  401: `airflow_password` was not supplied.
+}

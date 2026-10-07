@@ -245,6 +245,9 @@ One credential variable and one principal per endpoint, declared in `shim/roles/
 | `ingestion/freshness` | `SHIM_INGESTION_FRESHNESS_PG_DSN` | Postgres `nfl_check_freshness` | column SELECT on `dms_loaded_at`, `utm_loaded_at`, heartbeat `source_name, beat_at`; read-only |
 | `lineage` | `SHIM_LINEAGE_PG_DSN` | Postgres `nfl_check_lineage` | column SELECT on `stage, status, event_time, interval_start, interval_end` of `observability.pipeline_event`; read-only |
 | `events` | `SHIM_EVENTS_PG_DSN` | Postgres `nfl_check_events` | SELECT on `observability.pipeline_event`; read-only |
+| `trace` | `SHIM_TRACE_PG_DSN` | Postgres `nfl_check_trace` | SELECT on `observability.pipeline_event` and `observability.alert_delivery`; read-only |
+| `alerts/delivery` | `SHIM_ALERT_DELIVERY_PG_DSN` | Postgres `nfl_check_alert_delivery` | column SELECT on eight columns of `pipeline_event`, SELECT on `alert_delivery`; read-only |
+| `monitor` | `SHIM_MONITOR_PG_DSN` | Postgres `nfl_check_monitor` | SELECT on `observability.monitor_sample`; read-only |
 | `replication/lag` | `SHIM_REPLICATION_LAG_MYSQL_DSN` | MySQL `nfl_check_replication_lag` | `REPLICATION CLIENT` only; table SELECT and binlog reads are refused |
 | `replication/*` (Connect side) | `*_CONNECT_URL` | none: the local Connect REST API has no auth | nothing; the code issues GETs only |
 | `extraction/*`, `reporting/file`, S3 side of `delivery/sftp` | five `*_AWS_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` pairs | ONE shared floci key, declared under `shared_with` in each of the five role files | **nothing. Reachability only.** floci accepts any key for any action and evaluates no IAM policy, so a passing S3 check proves the endpoint answered and the object is there; it proves no IAM identity and no S3 scope |

@@ -1,0 +1,75 @@
+meta {
+  name: 22 Logs: Kafka Connect, recent events
+  type: http
+  seq: 22
+  tags: [
+    local-only
+  ]
+}
+
+post {
+  url: {{logs_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: Logs_20140328.FilterLogEvents
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: logs
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {
+    "logGroupName": "{{log_group_prefix}}/nfl-kafka-connect",
+    "limit": 500
+  }
+}
+
+script:pre-request {
+  const now = Date.now();
+  bru.setVar("log_window_start_ms", now - 5 * 60 * 1000);
+  req.setBody({
+    logGroupName: bru.getEnvVar("log_group_prefix") + "/nfl-kafka-connect",
+    startTime: now - 5 * 60 * 1000,
+    limit: 500
+  });
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the replication engine logged in the last five minutes, and every event is inside that window", function () {
+    const ev = res.getBody().events;
+    expect(ev.length).to.be.at.least(1);
+    for (const e of ev) {
+      expect(e.timestamp).to.be.at.least(Number(bru.getVar("log_window_start_ms")));
+    }
+  });
+}
+
+docs {
+  ## What this proves
+  The replication engine's own log, by time window. Before this the only way to read it was
+  `docker logs nfl-kafka-connect` on the host. The pre-request script sets `startTime` to five minutes ago,
+  which a static body cannot express. Tagged `local-only`: on AWS replication is DMS, whose log group has
+  another name.
+
+  ## Captures
+  - `log_window_start_ms` (pre-request)
+
+  ## Consumes
+  - `logs_endpoint`, `log_group_prefix` (environment)
+
+  ## When it fails
+  No event in five minutes: Kafka Connect is down or the shipper is (`docker logs nfl-logship`).
+}

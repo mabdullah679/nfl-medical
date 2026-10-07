@@ -23,6 +23,7 @@ script:post-response {
   const want = [bru.getEnvVar("interval_start_ts"), bru.getEnvVar("interval_end_ts")];
   const mine = runs.filter(r => r.conf && r.conf.interval_start === want[0] && r.conf.interval_end === want[1]);
   bru.setVar("ingestion_clean_latest_state", mine.length ? mine[0].state : "");
+  bru.setVar("obs_correlation_id", (mine.length && mine[0].conf.correlation_id) || "");
 }
 
 tests {
@@ -34,6 +35,9 @@ tests {
   test("the newest nfl_ingestion run for the clean interval ended in success", function () {
     expect(bru.getVar("ingestion_clean_latest_state"), "no run for this interval among the newest 100, or it is not success").to.equal("success");
   });
+  test("that run was triggered with a correlation id, captured as the thread to follow", function () {
+    expect(bru.getVar("obs_correlation_id"), "the newest run carries no conf.correlation_id: send 20-ingestion again").to.match(/^[A-Za-z0-9_]{8,96}$/);
+  });
 }
 
 docs {
@@ -44,6 +48,7 @@ docs {
 
   ## Captures
   - `ingestion_clean_latest_state`
+  - `obs_correlation_id`: the `conf.correlation_id` of that run, the thread `14`, `15` and `21` follow
 
   ## Consumes
   - `interval_start_ts`, `interval_end_ts` (environment)

@@ -3,13 +3,16 @@ connections, event/alert recording. No DAG objects are defined here."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterator
+from urllib.parse import quote
 
 from airflow.exceptions import AirflowFailException
 
@@ -21,7 +24,15 @@ REPORT_CODE = "NFL_ACCT_ACTIVITY"
 REPORT_VERSION = "v1"
 
 EVENT_TABLE = "observability.pipeline_event"
-ALERT_SEVERITY = "critical"
+
+# The three alert severities. A task that has exhausted its retries stopped the
+# stage for its interval, which is always critical; warning and info are raised
+# by the watcher (watch/app.py) for a degraded-but-running state and a recovery.
+SEVERITIES = ("critical", "warning", "info")
+TASK_FAILURE_SEVERITY = "critical"
+NOTIFY_CHANNEL = "operations"
+
+CORRELATION_RE = re.compile(r"^[A-Za-z0-9_]{8,96}$")
 
 SUCCESS_MARKER = "_SUCCESS"
 MANIFEST_NAME = "manifest.json"
@@ -122,9 +133,55 @@ def interval_from_context(context: dict[str, Any]) -> Interval:
     return interval_from_conf(context["dag_run"].conf)
 
 
+def correlation_from_context(context: dict[str, Any], *, strict: bool = True) -> str:
+    """The id that threads one pipeline attempt through all three DAGs. The
+    caller passes the same conf.correlation_id to each trigger. Without one the
+    run joins its interval's thread, nfl_<start>_<end>. strict=False is for the
+    failure and retry paths, which must record the event even when the conf is
+    what failed: an unusable id or interval then yields an id derived from the
+    run itself, so the alert is never dropped for want of a thread."""
+    conf = context["dag_run"].conf or {}
+    supplied = conf.get("correlation_id")
+    if supplied is not None:
+        if isinstance(supplied, str) and CORRELATION_RE.match(supplied):
+            return supplied
+        if strict:
+            raise AirflowFailException(
+                f"dag_run.conf.correlation_id={supplied!r} must be 8 to 96 letters, "
+                f"digits or underscores"
+            )
+    else:
+        try:
+            interval = interval_from_conf(conf)
+        except AirflowFailException:
+            if strict:
+                raise
+        else:
+            return f"nfl_{interval.start_date}_{interval.end_date}"
+    run = f"{context['dag_run'].dag_id}|{context['dag_run'].run_id}"
+    return "nfl_unthreaded_" + hashlib.sha256(run.encode()).hexdigest()[:16]
+
+
+def log_links(context: dict[str, Any]) -> dict[str, Any]:
+    """Where the log of this task attempt can be read: the Airflow UI page, the
+    REST path that returns the same text (relative to the Airflow base URL, so a
+    caller on any network can follow it), and the token that finds every line of
+    the thread in the shipped logs."""
+    ti = context["ti"]
+    api_path = (
+        f"/api/v1/dags/{quote(ti.dag_id, safe='')}/dagRuns/"
+        f"{quote(context['dag_run'].run_id, safe='')}/taskInstances/"
+        f"{quote(ti.task_id, safe='')}/logs/{ti.try_number}"
+    )
+    return {"log_url": ti.log_url, "log_api_path": api_path}
+
+
 def push_interval(context: dict[str, Any]) -> Interval:
     interval = interval_from_context(context)
     ti = context["ti"]
+    correlation = correlation_from_context(context)
+    ti.xcom_push(key="correlation_id", value=correlation)
+    log.info("correlation_id=%s run=%s", correlation, context["dag_run"].run_id)
     ti.xcom_push(key="interval_start", value=interval.start_iso)
     ti.xcom_push(key="interval_end", value=interval.end_iso)
     ti.xcom_push(key="interval_start_date", value=interval.start_date)
@@ -246,12 +303,13 @@ def record_event(
         )
     else:
         bounds = (interval.start.date(), interval.last_day)
+    correlation = correlation_from_context(context, strict=not allow_missing_interval)
     with pg("EVENTS") as conn, conn.cursor() as cur:
         cur.execute(
             f"INSERT INTO {EVENT_TABLE} "
             "(stage, step, status, interval_start, interval_end, dag_id, run_id, "
-            " metrics, message) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)",
+            " metrics, message, correlation_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)",
             (
                 stage,
                 ti.task_id,
@@ -262,18 +320,23 @@ def record_event(
                 context["dag_run"].run_id,
                 json.dumps(payload, default=str, sort_keys=True),
                 summary[:2000],
+                correlation,
             ),
         )
         conn.commit()
-    log.info("event recorded: stage=%s step=%s status=%s %s", stage, ti.task_id, status, summary)
+    log.info(
+        "event recorded: correlation_id=%s stage=%s step=%s status=%s %s",
+        correlation, stage, ti.task_id, status, summary,
+    )
 
 
 def make_failure_hook(stage_by_task: dict[str, str], default_stage: str):
     """The single Operations alert hook. Airflow calls it once per task, when the
-    task has exhausted its retries. Locally the alert is a pipeline_event row with
-    status 'failed' and metrics.alert = true carrying severity and the error
-    summary; in production the same hook also publishes to the Operations channel
-    (SNS/PagerDuty)."""
+    task has exhausted its retries. The alert is a pipeline_event row with status
+    'failed' and metrics.alert = true carrying severity, the error summary and the
+    links to this attempt's log. metrics.notify names the channel: nfl-watch reads
+    such rows and delivers them, recording each attempt in alert_delivery, so the
+    hook never waits on a mail server and a send that fails is retried."""
 
     def alert_operations(context: dict[str, Any]) -> None:
         ti = context["ti"]
@@ -287,15 +350,16 @@ def make_failure_hook(stage_by_task: dict[str, str], default_stage: str):
                 summary=summary,
                 metrics={
                     "alert": True,
-                    "severity": ALERT_SEVERITY,
+                    "severity": TASK_FAILURE_SEVERITY,
                     "error_summary": summary,
-                    "notify": "operations",
+                    "notify": NOTIFY_CHANNEL,
+                    **log_links(context),
                 },
                 allow_missing_interval=True,
             )
             log.error(
                 "OPERATIONS ALERT recorded: severity=%s stage=%s task=%s run=%s: %s",
-                ALERT_SEVERITY, stage, ti.task_id, context["dag_run"].run_id, summary,
+                TASK_FAILURE_SEVERITY, stage, ti.task_id, context["dag_run"].run_id, summary,
             )
         except Exception:
             log.exception(
@@ -315,6 +379,7 @@ def make_retry_hook(stage_by_task: dict[str, str], default_stage: str):
             stage=stage,
             status="retry",
             summary=_error_summary(context),
+            metrics=log_links(context),
             allow_missing_interval=True,
         )
 

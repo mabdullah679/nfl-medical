@@ -1,0 +1,72 @@
+meta {
+  name: 21 B12 The alert row carries its thread and a link to its log
+  type: http
+  seq: 21
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/events?interval_start={{interval_start_date_chaos}}&interval_end={{interval_end_date_chaos}}&status=failed&limit=200
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const ev = (res.getBody() && res.getBody().measured && res.getBody().measured.events) || [];
+  const row = ev.find(e => e.run_id === bru.getVar("chaos_dag_run_id"));
+  bru.setVar("chaos_alert_log_api_path", row ? row.log_api_path : "");
+  bru.setVar("chaos_alert_event_id", row ? row.event_id : "");
+  bru.setVar("chaos_alert_correlation_id", row ? row.correlation_id : "");
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the alert of the failed run has one of the three severities", function () {
+    const row = res.getBody().measured.events.find(e => e.run_id === bru.getVar("chaos_dag_run_id"));
+    expect(["critical", "warning", "info"]).to.include(row.severity);
+    expect(row.severity, "a task that exhausted its retries stopped the stage").to.equal("critical");
+  });
+  test("it carries a link to the Airflow page of the failed task's log", function () {
+    const row = res.getBody().measured.events.find(e => e.run_id === bru.getVar("chaos_dag_run_id"));
+    expect(row.log_url).to.be.a("string");
+    expect(row.log_url.startsWith(bru.getEnvVar("airflow_url") + "/")).to.equal(true);
+    expect(decodeURIComponent(row.log_url)).to.include(bru.getVar("chaos_dag_run_id"));
+    expect(row.log_url).to.include("task_id=is_failed_gate");
+  });
+  test("and the REST path of the same log, for this run, task and attempt", function () {
+    const row = res.getBody().measured.events.find(e => e.run_id === bru.getVar("chaos_dag_run_id"));
+    expect(row.log_api_path).to.equal("/api/v1/dags/nfl_ingestion/dagRuns/" + bru.getVar("chaos_dag_run_id") + "/taskInstances/is_failed_gate/logs/" + row.metrics.try_number);
+    expect(bru.getVar("chaos_alert_log_api_path")).to.equal(row.log_api_path);
+  });
+  test("a run triggered without a correlation id joins its interval's thread", function () {
+    const row = res.getBody().measured.events.find(e => e.run_id === bru.getVar("chaos_dag_run_id"));
+    expect(row.correlation_id).to.equal("nfl_" + bru.getVar("interval_start_date_chaos") + "_" + bru.getVar("interval_end_date_chaos"));
+  });
+}
+
+docs {
+  ## What this proves
+  What an alert needs to be acted on. The row `B11` found also carries a severity from the three-level set,
+  the Airflow UI link to the failed task's log, the REST path of the same log (followed in `B13`) and a
+  correlation id. `B1` passes no `correlation_id`, so the run joins its interval's thread,
+  `nfl_<start>_<end>`.
+
+  ## Captures
+  - `chaos_alert_log_api_path`
+  - `chaos_alert_event_id`
+  - `chaos_alert_correlation_id`
+
+  ## Consumes
+  - `chaos_dag_run_id` from `B1`
+  - `interval_start_date_chaos`, `interval_end_date_chaos` from `B6`, `B7`
+
+  ## When it fails
+  `log_url` not under `airflow_url`: `AIRFLOW__WEBSERVER__BASE_URL` on the Airflow service does not match the address Airflow is reached at. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

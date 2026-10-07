@@ -8,6 +8,9 @@ from psycopg import sql
 
 INTERVAL_RE = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Mirrors CORRELATION_RE in infra/airflow/dags/nfl_common.py and the CHECK on
+# observability.pipeline_event.correlation_id.
+CORRELATION_RE = re.compile(r"^[A-Za-z0-9_]{8,96}$")
 
 IntervalStart = Query(
     ...,

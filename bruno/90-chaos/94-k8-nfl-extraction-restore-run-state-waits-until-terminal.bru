@@ -1,0 +1,46 @@
+meta {
+  name: 94 K8 nfl_extraction restore run state (waits until terminal)
+  type: http
+  seq: 94
+  tags: [
+    chaos
+    airflow-basic-auth
+  ]
+}
+
+get {
+  url: {{airflow_url}}/api/v1/dags/nfl_extraction/dagRuns/{{chaos_rebuild_dag_run_id}}
+  body: none
+  auth: basic
+}
+
+auth:basic {
+  username: {{airflow_user}}
+  password: {{airflow_password}}
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  await poll.waitForDagRun(bru, "nfl_extraction", bru.getVar("chaos_rebuild_dag_run_id"));
+}
+
+tests {
+  test("the restore run succeeded", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().state).to.equal("success");
+  });
+}
+
+docs {
+  ## What this proves
+  The republish finished.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_rebuild_dag_run_id` from `K7`
+
+  ## When it fails
+  `failed`: read the run's task instances in the Airflow UI; the manifest is still the tampered one until this succeeds.
+}

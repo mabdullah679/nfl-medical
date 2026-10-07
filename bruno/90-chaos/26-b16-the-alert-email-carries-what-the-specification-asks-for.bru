@@ -1,0 +1,55 @@
+meta {
+  name: 26 B16 The alert email carries what the specification asks for
+  type: http
+  seq: 26
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{mail_url}}/api/v1/message/{{chaos_alert_mail_id}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200 for the message B15 found", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().ID).to.equal(bru.getVar("chaos_alert_mail_id"));
+  });
+  test("the body states run id, stage, interval, severity and the error summary", function () {
+    const t = res.getBody().Text;
+    expect(t).to.include(bru.getVar("chaos_dag_run_id"));
+    expect(t).to.match(/Stage \/ step:\s+ingestion \/ is_failed_gate/);
+    expect(t).to.match(/Interval:\s+2026-09-01 \.\. 2026-09-30/);
+    expect(t).to.match(/Severity:\s+critical/);
+    expect(t).to.include("Is Failed = YES");
+    expect(t).to.include("event_id=" + bru.getVar("chaos_alert_event_id"));
+  });
+  test("and the link to the log, the same one B13 followed", function () {
+    const t = res.getBody().Text;
+    expect(t).to.include(bru.getEnvVar("airflow_url") + bru.getVar("chaos_alert_log_api_path"));
+    expect(t).to.include(bru.getVar("chaos_alert_correlation_id"));
+  });
+}
+
+docs {
+  ## What this proves
+  The six things the specification says an alert must carry (run id, stage, interval, error summary,
+  severity, link to logs) are all in the text a person would read, plus the correlation id that finds the
+  rest of the thread. Sequence note: this is the last request of scenario B; it sits after `C1` because the
+  numbers before it were taken.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_alert_mail_id` from `B15`
+  - `chaos_alert_log_api_path`, `chaos_alert_event_id`, `chaos_alert_correlation_id` from `B12`
+  - `chaos_dag_run_id` from `B1`
+
+  ## When it fails
+  404: `B15` captured no message id.
+}

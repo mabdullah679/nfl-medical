@@ -1,0 +1,57 @@
+meta {
+  name: 91 K5 Shim events show the report process alert
+  type: http
+  seq: 91
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/events?interval_start={{interval_start_date_marker}}&interval_end={{interval_end_date_marker}}&status=failed&limit=200
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the failed run wrote exactly one failed event, at the gate, as an Operations alert", function () {
+    const mine = res.getBody().measured.events.filter(e => e.run_id === bru.getVar("chaos_gate_dag_run_id"));
+    expect(mine.map(e => e.step)).to.deep.equal(["is_process_failed"]);
+    expect(mine[0].stage).to.equal("reporting");
+    expect(mine[0].alert).to.equal(true);
+    expect(mine[0].severity).to.equal("critical");
+  });
+  test("the error summary says what disagreed, with both numbers", function () {
+    const row = res.getBody().measured.events.find(e => e.run_id === bru.getVar("chaos_gate_dag_run_id"));
+    expect(row.error_summary).to.include("Is Process Failed = YES");
+    expect(row.error_summary).to.include("manifest gold layer has " + bru.getVar("chaos_manifest_tampered_rows"));
+    expect(row.error_summary).to.include("report holds " + bru.getVar("chaos_manifest_original").layers.gold.row_count + " rows");
+  });
+  test("it links to the failed task's log", function () {
+    const row = res.getBody().measured.events.find(e => e.run_id === bru.getVar("chaos_gate_dag_run_id"));
+    expect(row.log_api_path).to.include("/taskInstances/is_process_failed/logs/");
+  });
+}
+
+docs {
+  ## What this proves
+  A report process failure alerts Operations: the fourth of the specification's four alert points. The alert
+  names the two row counts that disagreed.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_gate_dag_run_id` from `K3`
+  - `chaos_manifest_tampered_rows` from `K2`, `chaos_manifest_original` from `K1`
+  - `interval_start_date_marker`, `interval_end_date_marker` from `D3`, `D4`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

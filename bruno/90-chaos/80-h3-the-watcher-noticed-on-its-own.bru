@@ -1,0 +1,70 @@
+meta {
+  name: 80 H3 The watcher noticed on its own
+  type: http
+  seq: 80
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/monitor
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const result = await poll.waitForShim(bru, "/checks/monitor", function (b) {
+    return b.measured && b.measured.probes.connector_status && b.measured.probes.connector_status.level === "critical";
+  });
+  bru.setVar("chaos_watch_noticed_ms", Date.now() - Number(bru.getVar("chaos_watch_injected_ms")));
+}
+
+script:post-response {
+  const p = res.getBody() && res.getBody().measured && res.getBody().measured.probes.connector_status;
+  bru.setVar("chaos_watch_incident", (p && p.incident) || "");
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is fail, and it is the connector probe that is critical", function () {
+    expect(res.getBody().ok).to.equal(false);
+    const m = res.getBody().measured;
+    expect(m.probes_not_ok).to.include("connector_status");
+    expect(m.probes.connector_status.level).to.equal("critical");
+    expect(m.probes.connector_status.summary).to.include(bru.getEnvVar("source_connector_name"));
+    expect(m.probes.connector_status.summary).to.include("PAUSED");
+  });
+  test("the watcher itself is still alive: this is a finding, not a blind spot", function () {
+    expect(res.getBody().measured.watcher_alive).to.equal(true);
+    expect(res.getBody().measured.probes.connector_status.probe_ran).to.equal(true);
+  });
+  test("it opened an incident and noticed within a minute of the pause", function () {
+    expect(bru.getVar("chaos_watch_incident")).to.match(/^nfl_watch_connector_status_\d+$/);
+    expect(Number(bru.getVar("chaos_watch_noticed_ms"))).to.be.at.most(60000);
+  });
+}
+
+docs {
+  ## What this proves
+  Detection without a trigger. Nothing asked the pipeline anything after `H2`, and within a tick the
+  watcher's own sample says the source connector is PAUSED, at level `critical`, under an incident id. The
+  pre-request script only waits for that sample to appear; `chaos_watch_noticed_ms` is how long it took.
+
+  ## Captures
+  - `chaos_watch_incident`
+  - `chaos_watch_noticed_ms` (pre-request)
+
+  ## Consumes
+  - `chaos_watch_injected_ms` from `H2`
+
+  ## When it fails
+  Still ok after the poll timeout: the watcher is not running (`docker logs nfl-watch`) or `H2` was not sent. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

@@ -19,7 +19,7 @@ scripts/init-env.sh                                  # once: generates infra/nfl
 scripts/up.sh                                        # builds, starts, converges, proves; exit 0 = up
 ```
 
-`up.sh` ends with "Stack is up" only when all nine containers are healthy, both replication connectors
+`up.sh` ends with "Stack is up" only when all twelve containers are healthy, both replication connectors
 are RUNNING and every check identity could log in. Any other ending is a failure with a named cause.
 
 ```bash
@@ -48,11 +48,14 @@ bru run 90-chaos --env local \
 ```
 
 The first command is the normal run: it drives the clean interval (August 2026) through all three DAGs
-and checks every stage. The second injects seven failure scenarios and restores each one. In the Bruno
+and checks every stage. The second injects ten failure scenarios and restores each one. In the Bruno
 desktop app, open the `bruno/` folder and pick the environment `local`; see `bruno/README.md`.
 
 Last measured, 2026-10-04 UTC, bru 4.2.0: normal run 100 of 100 requests, 309 of 309 tests; chaos 57
 of 57 requests, 160 of 160 tests. Since then one test that could not fail was removed from `60-observability/02` on 2026-10-05; the normal run measured that day, chaos not re-run, is 100 of 100 requests and 308 of 308 tests.
+
+Measured again 2026-10-07 UTC after the observability work, on a wiped and cold-started stack: normal run
+109 of 109 requests, 344 of 344 tests; chaos 86 of 86, 233 of 233; normal again 109 of 109, 344 of 344.
 
 ## What is in here
 
@@ -62,7 +65,8 @@ of 57 requests, 160 of 160 tests. Since then one test that could not fail was re
 | `infra/` | compose file, schemas, roles and grants, seed data, connector configs, the three Airflow DAGs |
 | `shim/` | read-only checks over HTTP on port 8096, one database role per check |
 | `stub/` | DMS-shaped API on port 8098 for request-shape tests; replicates nothing |
-| `bruno/` | the test collection: 157 requests, 100 in the normal run and 57 in `90-chaos` |
+| `watch/` | the watcher: probes replication and the orchestrator every 15 s, raises alerts on its own, delivers every alert by email |
+| `bruno/` | the test collection: 195 requests, 109 in the normal run and 86 in `90-chaos` |
 | `docs/ARCHITECTURE.md` | every container and port, and what each stand-in cannot prove |
 | `docs/RUNBOOK.md` | start, stop, reset, run, read a failure, rerun an interval, inject failures |
 | `docs/COVERAGE.md` | all 61 requirement IDs against what exercises them |
@@ -70,7 +74,8 @@ of 57 requests, 160 of 160 tests. Since then one test that could not fail was re
 | `design/architecture.png` | the High Level Design the specification was derived from; kept locally and gitignored, not in the repository |
 
 Local addresses, all bound to 127.0.0.1: Airflow 8095, shim 8096, Kafka Connect 8097, DMS stub 8098,
-MySQL 3307, Postgres 5440, Kafka 9099, SFTP 2225. Credentials are generated into `infra/nfl.env`, which
+MySQL 3307, Postgres 5440, Kafka 9099, SFTP 2225, the Operations inbox 8094 (open it in a browser to read
+the alert emails). Container and task logs are in floci's CloudWatch Logs under `/nfl/`. Credentials are generated into `infra/nfl.env`, which
 is gitignored and never printed.
 
 ## What this does not prove
@@ -86,13 +91,15 @@ is gitignored and never printed.
   not accept. Scheduling is not exercised either: every DAG is trigger-only.
 - **The `aws` Bruno environment.** It holds placeholders and has never been run against an account.
 - **The Bruno desktop app.** Every measured run used the `bru` CLI.
-- **Alert delivery and a dashboard.** An alert is a row in a Postgres table. Nobody is notified, and
-  there is no dashboard.
+- **A real alert channel and a dashboard.** Alerts are emailed to a local inbox that nobody reads; the
+  agreed Operations channels are not connected. There is no dashboard.
+- **Real CloudWatch.** Logs are shipped to floci's CloudWatch Logs API by a local shipper that does not
+  exist in AWS. The log requests have not been run against AWS.
 - **Volume, performance, availability, recovery, encryption, secrets management.** One container per
   component, a few hundred seeded rows, no TLS, no KMS, no secrets manager.
 - **A literal `git clone`.** Nothing is committed yet. The cold start (`reset.sh -y`, `up.sh`, normal
   run) was proven in place with an existing env file, and by the infra fix round from a clean copy of
   the files git would add.
 
-`docs/COVERAGE.md` gives the verdict for each requirement: 9 covered, 11 covered through a stand-in,
-17 partly covered, 24 not covered.
+`docs/COVERAGE.md` gives the verdict for each requirement: 15 covered, 12 covered through a stand-in,
+12 partly covered, 22 not covered.

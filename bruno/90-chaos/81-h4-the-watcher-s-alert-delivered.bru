@@ -1,0 +1,66 @@
+meta {
+  name: 81 H4 The watcher's alert, delivered
+  type: http
+  seq: 81
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/alerts/delivery?since_minutes=30&correlation_id={{chaos_watch_incident}}
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const path = "/checks/alerts/delivery?since_minutes=30&correlation_id=" + bru.getVar("chaos_watch_incident");
+  await poll.waitForShim(bru, path, function (b) { return b.ok === true; });
+}
+
+script:post-response {
+  const ev = (res.getBody() && res.getBody().measured && res.getBody().measured.events) || [];
+  bru.setVar("chaos_watch_alert_event_id", ev.length ? ev[ev.length - 1].event_id : "");
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the incident has one alert, raised by the watcher and not by a DAG", function () {
+    const ev = res.getBody().measured.events;
+    expect(ev).to.have.lengthOf(1);
+    expect(ev[0].stage).to.equal("replication");
+    expect(ev[0].step).to.equal("watch_connector_status");
+    expect(ev[0].status).to.equal("failed");
+    expect(ev[0].severity).to.equal("critical");
+    expect(ev[0].run_id).to.equal(bru.getVar("chaos_watch_incident"));
+  });
+  test("it was delivered to the Operations channel within a minute", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    const e = res.getBody().measured.events[0];
+    expect(e.delivery_state).to.equal("sent");
+    expect(e.recipients).to.include("operations@");
+    expect(e.seconds_to_delivery).to.be.a("number").at.most(60);
+  });
+}
+
+docs {
+  ## What this proves
+  The watcher's finding became an alert and the alert was sent, with no run and no person involved. The row
+  has no DAG and no interval; its `run_id` and `correlation_id` are the incident id from `H3`.
+
+  ## Captures
+  - `chaos_watch_alert_event_id`
+
+  ## Consumes
+  - `chaos_watch_incident` from `H3`
+
+  ## When it fails
+  No event: the watcher changed level without writing the alert, read `docker logs nfl-watch`. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

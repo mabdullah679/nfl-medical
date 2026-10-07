@@ -489,3 +489,117 @@ heartbeat table is not pruned and grows by one row per beat. On an idle
 source a beat lands about every 48 s, not every 20 s (measured; the cause was
 not established). The staleness limit is fixed at 300 s; there is no
 end-to-end lag figure in seconds.
+
+---
+
+## D-013 — One correlation id per attempt, supplied by the caller
+
+**Date:** 2026-10-07
+**Status:** Settled, in use
+
+### Context
+
+Lineage answered "did the interval complete" by matching on the interval. Nothing tied the ingestion,
+extraction and reporting runs of one attempt together, so a rerun and the original were indistinguishable
+and no single query or log search returned one attempt.
+
+### Decision
+
+Every event row has a `correlation_id` column. The caller passes `conf.correlation_id` to each trigger;
+the DAGs validate it (8 to 96 letters, digits or underscores) and write it on every event and into their
+task logs. A run without one uses `nfl_<start>_<end>`. A failure whose conf yields neither still records
+its alert, under an id derived from the run.
+
+The id is not written into `manifest.json` or the report: both are deterministic by design and a
+per-attempt value would change their checksums on every rerun.
+
+### Evidence (2026-10-07)
+
+- `60-observability/14`: one thread with all five stages and a run of each DAG.
+- `60-observability/21`: the same id returns task log lines from all three DAGs.
+- Mutation: with `record_event` writing no id, `60-observability/14` went red.
+
+### Consequence and limit
+
+The three DAGs are not chained, so the thread exists only if the caller passes the same id three times.
+Bruno does; a production parent DAG or scheduler would have to.
+
+---
+
+## D-014 — The watcher is its own service, and alerting is an outbox
+
+**Date:** 2026-10-07
+**Status:** Settled, in use
+
+### Context
+
+Lag, connector state and failures were seen only when a run or a request looked. An alert was a database
+row nobody was sent.
+
+### Decision
+
+`nfl-watch` is a separate container, not an Airflow DAG: the orchestrator is one of the things it watches.
+It writes every reading to `observability.monitor_sample`, raises an alert or a recovery when a probe
+changes level, and delivers every event whose metrics carry `notify`, recording each attempt in
+`observability.alert_delivery`. The DAG failure hook stays a single INSERT and never waits on a mail server.
+
+Two database roles in the one process: `nfl_monitor` cannot read events, `nfl_notifier` cannot write them.
+
+The channel locally is SMTP to `nfl-mail` (Mailpit), chosen over an SNS topic on floci because a specific
+message can be searched for and read back by a request, and opened in a browser.
+
+Severities are `critical`, `warning` and `info`. A task that exhausted its retries is always critical.
+
+### Evidence (2026-10-07)
+
+- `90-chaos` scenario H: a paused connector is seen, alerted and emailed with nothing triggered; recovery
+  likewise. Scenarios B, J and K: each DAG alert delivered in 60 s or less (slowest measured 11.5 s).
+- By hand: mail server stopped (undelivered, then sent on retry), watcher stopped (`/checks/monitor` red),
+  Airflow frozen (critical after three unanswered ticks), heartbeat limit lowered (warning, then critical).
+- Mutation: a dispatcher that records `sent` without sending is caught by `90-chaos/24`, not by `23`.
+
+### Consequence and limits
+
+- The severity names and rules were chosen here. The specification's section 7 was not available.
+- The inbox is a stand-in. Nobody is notified.
+- An outage shorter than one 15 s tick is not seen. A mail outage is not itself alerted.
+- Nothing watches the watcher unless `/checks/monitor` is asked.
+- On first start the watcher emails every undelivered alert of the last 24 hours.
+
+---
+
+## D-015 — Logs are shipped to CloudWatch Logs on floci
+
+**Date:** 2026-10-07
+**Status:** Settled, in use
+
+### Context
+
+Only Airflow task logs were reachable over HTTP. Kafka Connect, the shim, the stub, the databases and SFTP
+needed `docker logs` on the host.
+
+### Decision
+
+`nfl-logship` (Vector 0.59.0) reads container output through the Docker API and Airflow task log files from
+the shared volume, and writes both to floci's CloudWatch Logs. Bruno reads them with the real CloudWatch
+Logs API, SigV4-signed, so the requests repoint at AWS by switching environment.
+
+### Evidence (2026-10-07, live calls against floci)
+
+- `PutLogEvents`, `FilterLogEvents`, `DescribeLogGroups`, `DescribeLogStreams` work.
+- `filterPattern` is a plain substring match, not AWS's syntax. A quoted phrase matched nothing.
+- `FilterLogEvents` on a group that does not exist answers 200 with no events; AWS raises
+  `ResourceNotFoundException`. That is why `60-observability/18` asserts the groups exist first.
+- A line written by the shim is readable about two to four seconds later (`60-observability/19`, `20`).
+
+### Consequence and limits
+
+- The shipper mounts the Docker socket, which is root on the Docker host for whoever controls that
+  container. Accepted for a local stand-in: pinned image, no published port, and it does not exist in AWS.
+- Vector 0.59 does not expand `${VAR}` in its config unless started with a flag named
+  `--dangerously-allow-env-var-interpolation`, so endpoint, region and the `/nfl` prefix are literals in
+  `infra/logship/vector.yaml`.
+- An event's timestamp is when it was shipped, not when it was written.
+- A quiet container has no log group until its first line after the shipper started.
+- The log requests have not been run against AWS.
+

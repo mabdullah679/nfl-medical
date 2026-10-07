@@ -4,6 +4,9 @@
 #   scripts/init-env.sh              create infra/nfl.env + SFTP keys
 #   scripts/init-env.sh --force      regenerate infra/nfl.env (new passwords)
 #   scripts/init-env.sh --keys-only  only ensure infra/keys/sftp exists
+#   scripts/init-env.sh --add-missing  append secrets the template gained since
+#                                    infra/nfl.env was generated; nothing that
+#                                    is already there is changed
 #
 # infra/nfl.env is infra/env.example.txt with every CHANGEME_* replaced by a
 # freshly generated random value. Values are never printed.
@@ -24,11 +27,13 @@ die() { printf '\033[31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
 FORCE=no
 KEYS_ONLY=no
+ADD_MISSING=no
 for arg in "$@"; do
   case "$arg" in
     --force)     FORCE=yes ;;
     --keys-only) KEYS_ONLY=yes ;;
-    -h|--help)   sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --add-missing) ADD_MISSING=yes ;;
+    -h|--help)   sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $arg" ;;
   esac
 done
@@ -82,6 +87,35 @@ PY
   echo "    wrote $ENV_FILE (0600, gitignored; values not shown)"
 }
 
+# A template that gained a secret after infra/nfl.env was generated. Existing
+# lines are left byte-for-byte alone, because the database volumes hold those
+# passwords; only names the file does not have yet are appended.
+add_missing_env() {
+  [ -f "$TEMPLATE" ] || die "missing template $TEMPLATE"
+  [ -f "$ENV_FILE" ] || die "missing $ENV_FILE - nothing to add to; run scripts/init-env.sh"
+  python3 - "$TEMPLATE" "$ENV_FILE" <<'PY'
+import re, secrets, string, sys
+
+template, target = sys.argv[1], sys.argv[2]
+alnum = string.ascii_letters + string.digits
+have = {m.group(1) for m in (re.match(r"^([A-Z0-9_]+)=", l) for l in open(target)) if m}
+added = []
+for line in open(template):
+    m = re.match(r"^([A-Z0-9_]+)=CHANGEME_\w*\s*$", line)
+    if m and m.group(1) not in have:
+        if m.group(1) in ("AIRFLOW_FERNET_KEY", "AIRFLOW_SECRET_KEY"):
+            sys.exit(m.group(1) + " is missing; that is not an added secret. Regenerate the file.")
+        added.append((m.group(1), "".join(secrets.choice(alnum) for _ in range(32))))
+if added:
+    with open(target, "a") as fh:
+        fh.write("\n# Added by scripts/init-env.sh --add-missing\n")
+        for name, value in added:
+            fh.write(f"{name}={value}\n")
+print("    added %d secret value(s): %s" % (len(added), ", ".join(n for n, _ in added) or "none missing"))
+PY
+  chmod 600 "$ENV_FILE"
+}
+
 # The SFTP server's host keys are generated HERE and mounted into the server,
 # rather than letting the container invent new ones on every recreate. That is
 # what makes pinning possible: known_hosts is written from the same key, so a
@@ -128,6 +162,12 @@ write_keys() {
   fi
   echo "    host key fingerprint: $(ssh-keygen -lf "$KEY_DIR/ssh_host_ed25519_key.pub" | cut -d' ' -f2)"
 }
+
+if [ "$ADD_MISSING" = yes ]; then
+  say "Adding missing secrets to infra/nfl.env"
+  add_missing_env
+  exit 0
+fi
 
 if [ "$KEYS_ONLY" != yes ]; then
   say "Generating infra/nfl.env"

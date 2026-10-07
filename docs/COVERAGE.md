@@ -40,26 +40,28 @@ requests and 309 of 309 tests; `90-chaos` 57 of 57 and 160 of 160; normal run ag
 309 of 309. All three were re-run for this document, in that order, and the normal run once more after
 a `reset.sh -y` and a cold `up.sh` (100 of 100, 309 of 309). Since then one test that could not fail was removed from `60-observability/02` on 2026-10-05; the normal run measured that day, chaos not re-run, is 100 of 100 requests and 308 of 308 tests.
 
+**Measured again 2026-10-07 (UTC), after the observability work, on a stack wiped with `reset.sh -y` and cold-started:** normal run 109 of 109 requests and 344 of 344 tests; `90-chaos` 86 of 86 and 233 of 233; normal run again 109 of 109 and 344 of 344. The rows for REP-03, ORC-02, EXT-01, EXT-07, RPT-04, RPT-07, ALR-01 to ALR-03, DSH-01, NFR-05 and SEC-08 were rewritten that day; every other row is as written on 2026-10-04 and was not re-derived.
+
 ## Summary
 
 <!-- summary:begin -->
-Requirement IDs in the specification: **61**. Bruno requests cited: **91** distinct files.
+Requirement IDs in the specification: **61**. Bruno requests cited: **128** distinct files.
 
 | Verdict | All 61 IDs | Of the 32 functional IDs with priority Must |
 |---|---|---|
-| **COVERED** | 9 | 7 |
-| **STAND-IN** | 11 | 8 |
-| **PARTIAL** | 17 | 13 |
-| **NOT COVERED** | 24 | 4 |
+| **COVERED** | 15 | 13 |
+| **STAND-IN** | 12 | 9 |
+| **PARTIAL** | 12 | 8 |
+| **NOT COVERED** | 22 | 2 |
 
 | Area | COVERED | STAND-IN | PARTIAL | NOT COVERED |
 |---|---|---|---|---|
 | REP | 0 | 2 | 2 | 1 |
-| ORC | 1 | 0 | 4 | 1 |
+| ORC | 2 | 0 | 3 | 1 |
 | ING | 1 | 4 | 0 | 1 |
-| EXT | 2 | 1 | 3 | 1 |
-| RPT | 4 | 1 | 2 | 0 |
-| ALR | 0 | 0 | 2 | 1 |
+| EXT | 4 | 1 | 2 | 0 |
+| RPT | 5 | 1 | 1 | 0 |
+| ALR | 2 | 1 | 0 | 0 |
 | DSH | 0 | 1 | 0 | 1 |
 | NFR | 1 | 1 | 2 | 9 |
 | SEC | 0 | 1 | 2 | 9 |
@@ -73,7 +75,7 @@ The counts above are produced by a script from the tables below (see "Keeping th
 |---|---|---|---|---|---|
 | REP-01 | Must | DMS full load, then continuous change capture, from MySQL into Staging | `10-replication/01`, `10-replication/02` (task running; the three tables have rows in staging), `10-replication/05` to `10-replication/08` (source and sink connectors RUNNING), `10-replication/10` with `/checks/replication/connector-status`; change capture continuing: `90-chaos/77` (a beat written at the source after the sink resumed has landed) | **STAND-IN** | Debezium and a JDBC sink move the rows, not DMS. DMS task settings, its full-load to CDC cutover and its failure vocabulary are untested. The DMS-shaped API on 8098 is a stub that replicates nothing. |
 | REP-02 | Must | Table and column mappings are configuration driven and version controlled | `10-replication/02` (exactly the three Hawks tables are replicated, by name). The mapping is `table.include.list` in `infra/debezium/mysql-source.json` and `topics` in `infra/debezium/jdbc-sink.json`. | **STAND-IN** | DMS table-mapping rules. Column-level mapping. No request shows that an unlisted table stays out. Nothing is committed yet, so "version controlled" is not true today. |
-| REP-03 | Must | Lag is measured continuously and alerts above the threshold (assumed 5 minutes) | `10-replication/09` with `/checks/replication/lag` (source capture lag, MySQL to Kafka only); `20-ingestion/14` with `/checks/ingestion/freshness` (end-to-end heartbeat, 300 s limit); red cases `90-chaos/05` and `90-chaos/73`; `nfl_ingestion.pre_check` fails a run on a stale heartbeat | **PARTIAL** | Lag is measured when asked, not continuously. An alert row is written only when an ingestion run reaches `pre_check`; nothing alerts on its own. The stale-heartbeat alert was produced by hand in the infra fix round (beats stopped, run failed at 330 s), not by a request. |
+| REP-03 | Must | Lag is measured continuously and alerts above the threshold (assumed 5 minutes) | `60-observability/16` with `/checks/monitor` (`nfl-watch` samples the end-to-end heartbeat, both connectors and the orchestrator every 15 s whether or not anyone asks; the request reads samples it did not cause); a stopped connector alerts with nothing triggered: `90-chaos/78` to `90-chaos/86`; lag when asked: `10-replication/09` with `/checks/replication/lag`, `20-ingestion/14` with `/checks/ingestion/freshness`; red cases `90-chaos/05` and `90-chaos/73` | **PARTIAL** | The alert for lag above the threshold is not produced by a request: the limit is 300 s and no request waits that long. It was produced by hand on 2026-10-07 by running the watcher with a 25 s and a 10 s limit (ok to warning, warning to critical, back to ok, each emailed). A pause shorter than one 15 s tick is not seen by the watcher. Nothing watches the watcher except this request. |
 | REP-04 | Should | Source schema changes are detected and reported, never silently dropping data | none | **NOT COVERED** | No request changes the source schema. |
 | REP-05 | Must | Staging is written only by DMS | No Bruno request. Enforced by Postgres grants in `infra/sql/03-roles.sql.tmpl`: only `nfl_replication` holds INSERT on `staging`. SQL probe run for this document: `nfl_hop` INSERT into `staging.payment` refused. | **PARTIAL** | Proven by a SQL probe outside the collection. The superuser `nfl_admin` can still write. Local grants, not DMS or IAM. |
 
@@ -82,7 +84,7 @@ The counts above are produced by a script from the tables below (see "Keeping th
 | ID | Pri | Requirement | Exercised by | Verdict | Not proven |
 |---|---|---|---|---|---|
 | ORC-01 | Must | Airflow owns scheduling and triggers the three pre-checks | `20-ingestion/02`, `20-ingestion/03`, `30-extraction/01`, `40-reporting/01`; the pre-checks are `nfl_ingestion.pre_check`, `nfl_extraction.pre_check_ingestion` and `nfl_reporting.wait_for_success_marker`, seen succeeded in `20-ingestion/05`, `30-extraction/03`, `40-reporting/03` | **PARTIAL** | Every DAG has `schedule=None`. Runs are started through the REST API; no schedule ever fires. The three DAGs are not chained: nothing starts the next stage automatically. |
-| ORC-02 | Must | A stage starts only when the upstream stage reported success for the same interval | Reporting refuses without the marker: `90-chaos/37` to `90-chaos/40`. The ingestion gate stops its own downstream tasks: `90-chaos/12`. Extraction's refusal is `nfl_extraction.pre_check_ingestion`. | **PARTIAL** | No request triggers extraction for the failed interval. That refusal was seen only in the pipeline builder's hand-run, on an earlier volume. |
+| ORC-02 | Must | A stage starts only when the upstream stage reported success for the same interval | Extraction refuses a failed interval: `90-chaos/27` to `90-chaos/29` (`nfl_extraction.pre_check_ingestion` fails, nothing downstream runs). Reporting refuses without the marker: `90-chaos/37` to `90-chaos/40`. The ingestion gate stops its own downstream tasks: `90-chaos/12`. | **COVERED** | The three DAGs are still not chained; each refusal is seen when a caller triggers the stage. |
 | ORC-03 | Must | Every run is parameterised by data interval; reruns and backfills need no code change | `20-ingestion/03`, `20-ingestion/10`, `20-ingestion/11`; a second interval with the same code: `90-chaos/10`; a run with no interval is refused: `90-chaos/60` to `90-chaos/63` | **COVERED** | A backfill over many intervals was not run. |
 | ORC-04 | Must | Retries use a configurable count and exponential backoff | `90-chaos/39` (the gate used every retry), `90-chaos/40` (one retry event per retry). Count and delay are `NFL_GATE_RETRIES` and `NFL_GATE_RETRY_DELAY_SECONDS` on `nfl_reporting.wait_for_success_marker` and `nfl_extraction.is_utm`. | **PARTIAL** | The delay is fixed (15 s). There is no exponential backoff in the DAG code. Every other task has 0 retries. No request changes the count. |
 | ORC-05 | Must | Each task is idempotent: a rerun gives the same result and no duplicates | Delivery rerun: `50-delivery` re-triggers reporting for the same interval and `50-delivery/18` finds exactly one copy on SFTP. Ingestion and extraction: one trigger each per run, end state checked by `20-ingestion/12` (staging equals utm per table) and `20-ingestion/13` (no duplicate keys) | **PARTIAL** | Only the delivery rerun is covered by requests (`50-delivery`). A single green run triggers ingestion and extraction once each, and no request compares outputs across runs; their idempotency was shown by repeating runs by hand and diffing, not by a request. Measured that way for this document: across two cold starts and every rerun in between the report is 3736 bytes with sha256 `31d92497...1f1d` and the manifest sha256 is `6d5ecc37...c94d`, the same values the pipeline builder recorded on an earlier volume. |
@@ -103,13 +105,13 @@ The counts above are produced by a script from the tables below (see "Keeping th
 
 | ID | Pri | Requirement | Exercised by | Verdict | Not proven |
 |---|---|---|---|---|---|
-| EXT-01 | Must | A pre-check confirms ingestion completed for the interval | `nfl_extraction.pre_check_ingestion`; green in `30-extraction/03` | **PARTIAL** | Only the passing path is in the collection. The refusal for a failed interval was seen in the pipeline builder's hand-run only. |
+| EXT-01 | Must | A pre-check confirms ingestion completed for the interval | `nfl_extraction.pre_check_ingestion`; green in `30-extraction/03`; refusal for an interval whose batch FAILED in `90-chaos/27`, `90-chaos/28` | **COVERED** | The refusal for an interval with no batch at all is not injected. |
 | EXT-02 | Must | "Is UTM" confirms the data is present and complete, retries, then alerts | `nfl_extraction.is_utm`; green in `30-extraction/03` | **PARTIAL** | No request makes it retry or exhaust its retries. The builder's hand-run saw one retry then a pass. The same retry mechanism is exercised on the reporting gate (RPT-01). |
 | EXT-03 | Must | A Spark job reads the interval from UTM with partitioned reads | `nfl_extraction.write_parquet_temp`; `30-extraction/02`, `30-extraction/03` | **STAND-IN** | The task is psycopg2 plus pyarrow. No Spark, no partitioned read, no cluster. Engine fidelity: none. |
 | EXT-04 | Must | Parquet output on S3 under a path that carries the interval | `30-extraction/08`, `30-extraction/13`, `30-extraction/19`, `30-extraction/20` with `/checks/extraction/parquet-rowcount` | **COVERED** | The layout is `df_<start>_<end>/<layer>/<dataset>/`; the specification's example puts layer and dataset first. Dates are `YYYYMMDD`. The store is floci, not S3. |
 | EXT-05 | Must | Writes are atomic: temporary prefix, then publish with marker and manifest | `nfl_extraction.publish`; `30-extraction/14` (temp prefix empty after publish), `30-extraction/15`, `30-extraction/16`, `30-extraction/17` with `/checks/extraction/s3-marker`, `30-extraction/18` with `/checks/extraction/manifest` | **PARTIAL** | Only the finished state is observed. No request interrupts a publish. S3 has no atomic rename; the marker written last is the commit point. |
 | EXT-06 | Should | Silver holds cleansed data, Gold holds aggregates | `30-extraction/09`, `30-extraction/10`, `30-extraction/19`, `30-extraction/20` | **COVERED** | Row counts and checksums are checked, not whether the content is "cleansed" or the aggregates are right. |
-| EXT-07 | Must | Any extraction failure alerts Operations with run details | none | **NOT COVERED** | No request fails an extraction run. The alert hook is the one shared by all three DAGs (`nfl_common.make_failure_hook`) and is exercised for ingestion and reporting. |
+| EXT-07 | Must | Any extraction failure alerts Operations with run details | `90-chaos/27` to `90-chaos/29`: the failed run writes one alert at stage extraction and it is delivered | **COVERED** | One failure mode, the pre-check refusal. A failure in the middle of a Parquet write or a publish is not injected. Delivery is to the local inbox (ALR-03). |
 
 ## RPT: reporting and delivery
 
@@ -118,19 +120,19 @@ The counts above are produced by a script from the tables below (see "Keeping th
 | RPT-01 | Must | A pre-check confirms the S3 success marker; if absent it retries, then alerts | `nfl_reporting.wait_for_success_marker`; `90-chaos/34` to `90-chaos/40`; restore `90-chaos/41` to `90-chaos/46`; green in `40-reporting/03` | **COVERED** | The retry delay is fixed, not exponential (ORC-04). |
 | RPT-02 | Must | The Reporting Engine applies report logic as Spark jobs | `nfl_reporting.build_report`; `40-reporting/02`, `40-reporting/03`, `40-reporting/15` | **STAND-IN** | The report is built in Python inside an Airflow task. No Spark. One report (`NFL_ACCT_ACTIVITY`), no report metadata store. |
 | RPT-03 | Must | Report files have a deterministic name, a header and a checksum | `40-reporting/07`, `40-reporting/08`, `40-reporting/13`, `40-reporting/14`, `40-reporting/15` with `/checks/reporting/file` | **COVERED** | The header record is checked by `nfl_reporting.is_process_failed`, not asserted by a request. |
-| RPT-04 | Must | "Is Process Failed" stops the run, delivers nothing and alerts | `nfl_reporting.is_process_failed`; green in `40-reporting/03`, `60-observability/05` | **PARTIAL** | No request makes this gate fail. |
+| RPT-04 | Must | "Is Process Failed" stops the run, delivers nothing and alerts | `nfl_reporting.is_process_failed`; made to fail in `90-chaos/87` to `90-chaos/92` (run failed, `deliver_sftp` never ran, alert raised and delivered); restore `90-chaos/93` to `90-chaos/98`; green in `40-reporting/03`, `60-observability/05` | **COVERED** | One cause is injected: a manifest whose gold row count disagrees with the report. The gate's other conditions (empty report, checksum mismatch, bad trailer) are not injected. |
 | RPT-05 | Must | Delivery uploads under a temporary name, verifies size and checksum, then renames | `nfl_reporting.deliver_sftp`; `50-delivery/07` to `50-delivery/19` with `/checks/delivery/sftp` | **COVERED** | The recipient is a local SFTP container. A failure in the middle of a transfer is not injected. |
 | RPT-06 | Must | Delivery retries transient errors and sends no duplicate unless a rerun is flagged | `50-delivery/05` (an unflagged rerun skips), `50-delivery/07`, `50-delivery/12`, `50-delivery/14`, `50-delivery/18` (a flagged rerun replaces, one copy) | **PARTIAL** | `deliver_sftp` has 0 retries, and no transient SFTP error is injected. |
-| RPT-07 | Must | Events and metrics are captured per step | `nfl_reporting.capture_events`; `60-observability/08` with `/checks/lineage`; `60-observability/11` with `/checks/events`; `50-delivery/09` (task start and end) | **COVERED** | One event per stage outcome, carrying status, row count, file size and delivery action. Start and end times come from Airflow, not from the event row. |
+| RPT-07 | Must | Events and metrics are captured per step | `nfl_reporting.capture_events`; `60-observability/08` with `/checks/lineage`; `60-observability/11` with `/checks/events`; one attempt as a single ordered thread: `60-observability/14` with `/checks/trace`; `50-delivery/09` (task start and end) | **COVERED** | One event per stage outcome, carrying status, row count, file size and delivery action. Start and end times come from Airflow, not from the event row. |
 
 ## ALR and DSH: alerting and dashboard
 
 | ID | Pri | Requirement | Exercised by | Verdict | Not proven |
 |---|---|---|---|---|---|
-| ALR-01 | Must | Alerts at four points: ingestion failure, extraction failure, reporting pre-check failure, report process failure | Ingestion failure: `90-chaos/13`, `90-chaos/20`. Reporting pre-check failure: `90-chaos/40`. Also an invalid-conf failure: `90-chaos/63`. | **PARTIAL** | Two of the four points. No request fails extraction or the report process. |
-| ALR-02 | Must | Each alert carries run id, stage, interval, error summary, severity and a link to logs | `90-chaos/20`, `90-chaos/40`, `90-chaos/63` | **PARTIAL** | The alert row has run id, stage, interval, error summary and severity. It has no link to logs. Severity is the constant `critical`; the three severity levels of section 7 do not exist. |
-| ALR-03 | Must | Alerts reach Operations and Production Support through the agreed channels | none | **NOT COVERED** | An alert here is a row in `observability.pipeline_event` and a log line. Nothing sends email, chat or a page. |
-| DSH-01 | Must | The dashboard shows run status per stage, durations, volumes, delivery status and SLA compliance | `60-observability/01`, `60-observability/08` with `/checks/lineage`, `60-observability/11`, `60-observability/12` with `/checks/events` | **STAND-IN** | There is no dashboard. The data a dashboard would read is a Postgres table, read through the shim. SLA compliance is not computed. |
+| ALR-01 | Must | Alerts at four points: ingestion failure, extraction failure, reporting pre-check failure, report process failure | Ingestion failure: `90-chaos/13`, `90-chaos/20`. Extraction failure: `90-chaos/29`. Reporting pre-check failure: `90-chaos/40`. Report process failure: `90-chaos/91`. Also an invalid-conf failure: `90-chaos/63`. | **COVERED** | One injected cause per alert point. |
+| ALR-02 | Must | Each alert carries run id, stage, interval, error summary, severity and a link to logs | `90-chaos/21` (severity, link to the log, correlation id on the row), `90-chaos/22` (the link is followed and returns the failed task's log), `90-chaos/26` (the delivered email states run id, stage, interval, error summary, severity and the link); also `90-chaos/20`, `90-chaos/40`, `90-chaos/63` | **COVERED** | The three severities are `critical`, `warning` and `info`. Those names and the rule for each are this harness's; the specification's section 7 was not available to check them against. Requests exercise `critical` and `info`; `warning` was exercised by hand (see REP-03). |
+| ALR-03 | Must | Alerts reach Operations and Production Support through the agreed channels | `90-chaos/23`, `90-chaos/29`, `90-chaos/81`, `90-chaos/92` with `/checks/alerts/delivery` (each alert sent within 60 s, attempts recorded); the email read back from the inbox: `90-chaos/24`, `90-chaos/26`, `90-chaos/82`; nothing left undelivered: `60-observability/15` | **STAND-IN** | The channel is a local mail server that keeps every message (`nfl-mail`). Nobody is notified and the agreed channels are not known. A mail outage is not itself alerted; it shows as `undelivered` on `/checks/alerts/delivery` and the send is retried with backoff (seen by hand, 2026-10-07). |
+| DSH-01 | Must | The dashboard shows run status per stage, durations, volumes, delivery status and SLA compliance | `60-observability/01`, `60-observability/08` with `/checks/lineage`, `60-observability/11`, `60-observability/12` with `/checks/events`, `60-observability/14` with `/checks/trace`, `60-observability/16` with `/checks/monitor` | **STAND-IN** | There is no dashboard. The data a dashboard would read is three Postgres tables, read through the shim. SLA compliance is not computed. |
 | DSH-02 | Must | Dashboard access is role based and read only for business users | none | **NOT COVERED** | No dashboard exists. |
 
 ## NFR: non-functional
@@ -141,7 +143,7 @@ The counts above are produced by a script from the tables below (see "Keeping th
 | NFR-02 | Timeliness | Reports delivered by the agreed cut-off | none | **NOT COVERED** | No cut-off is defined and no request measures run time against one. |
 | NFR-03 | Performance | Extraction and reporting finish in the batch window and scale with volume | none | **NOT COVERED** | 460 rows, no Spark. Local timings predict nothing. |
 | NFR-04 | Scalability | 5x volume without code change | none | **NOT COVERED** | No volume test. |
-| NFR-05 | Reliability | Transient failures recover through retries; permanent failures alert within minutes | `90-chaos/39`, `90-chaos/40` | **PARTIAL** | Retries and the final alert row are shown. No request has a retry that then succeeds, and no request measures the time to the alert. |
+| NFR-05 | Reliability | Transient failures recover through retries; permanent failures alert within minutes | `90-chaos/39`, `90-chaos/40` (retries, then the alert); time from failure to delivered alert asserted at 60 s or less in `90-chaos/23`, `90-chaos/29`, `90-chaos/81`, `90-chaos/92` | **PARTIAL** | No request has a retry that then succeeds. |
 | NFR-06 | Idempotency | Any stage can be rerun with identical results | as ORC-05: `50-delivery/18` for the delivery rerun; `20-ingestion/12`, `20-ingestion/13` for the end state of one run | **PARTIAL** | As ORC-05: the delivery rerun is covered by `50-delivery`; ingestion and extraction idempotency was shown by repeating runs by hand and diffing, not by a request. |
 | NFR-07 | Availability | High availability inside the region | none | **NOT COVERED** | One container per component on one machine. |
 | NFR-08 | Recoverability | RPO 15 minutes, RTO 4 hours (assumed) | none | **NOT COVERED** | No restore test. A stop and start keeps the volumes; that is not a recovery test. |
@@ -162,7 +164,7 @@ The counts above are produced by a script from the tables below (see "Keeping th
 | SEC-05 | Secrets | Credentials live in a secrets manager, rotate, never appear in code or logs | none | **NOT COVERED** | Credentials are generated into `infra/nfl.env` (gitignored) and read from the environment; connector configs use Kafka's file config provider. No secrets manager is used and nothing rotates on a schedule. |
 | SEC-06 | Network | Private subnets, security groups, controlled egress | none | **NOT COVERED** | Published ports bind 127.0.0.1 only. That is local hygiene, not network design. |
 | SEC-07 | Data protection | Sensitive fields classified and masked by default | none | **NOT COVERED** | The delivered report holds per-facility totals only. The Silver Parquet for `patient_account` carries patient names and MRN unmasked. |
-| SEC-08 | Auditability | Access, changes, runs and deliveries logged to immutable storage | `60-observability/13` (Airflow audit log of triggers), `60-observability/11` (event rows) | **PARTIAL** | The event writer role can only INSERT, but the table is ordinary Postgres storage and a superuser can change it. Data access is not logged. |
+| SEC-08 | Auditability | Access, changes, runs and deliveries logged to immutable storage | `60-observability/13` (Airflow audit log of triggers), `60-observability/11` (event rows), `60-observability/18` to `60-observability/22` (container and task logs in CloudWatch Logs) | **PARTIAL** | The event writer role can only INSERT, but the tables are ordinary Postgres storage and a superuser can change them. Shipped logs sit in floci, which enforces no retention or immutability. Data access is not logged. |
 | SEC-09 | Segregation of duties | Developers cannot change production data or approve their own deployments | none | **NOT COVERED** | One operator, one Admin user. |
 | SEC-10 | Dashboard access | Single sign-on with role-based access | none | **NOT COVERED** | No dashboard. |
 | SEC-11 | Vulnerability management | Images and libraries scanned and patched | none | **NOT COVERED** | Images are pinned by tag. Nothing scans them. |
@@ -177,7 +179,11 @@ The counts above are produced by a script from the tables below (see "Keeping th
   from the Debezium connector's state.
 - **"Least privilege is enforced."** For Postgres, MySQL and SFTP it is. For S3 it is not: floci
   evaluates no IAM policy.
-- **"Alerting works."** An alert row is written. Nobody is notified.
+- **"Alerting works."** An alert row is written and an email is sent to a local inbox that nobody reads.
+  The agreed Operations channels are not connected.
+- **"Something is watching."** `nfl-watch` watches replication and the orchestrator. Nothing watches
+  `nfl-watch` unless someone sends `60-observability/16`, and it does not see an outage shorter than its
+  15 s tick.
 - **"It runs on AWS."** The `aws` Bruno environment has never been run against an account, and the
   Airflow requests use basic auth, which Amazon MWAA does not accept.
 - **"The collection works in the Bruno app."** Every run was made with the `bru` CLI.
@@ -191,8 +197,9 @@ belong to the DAG owner and the specification owner, not to this document.
 2. **ORC-04.** Retry delay is fixed; the specification asks for exponential backoff.
 3. **RPT-06.** `deliver_sftp` does not retry.
 4. **SEC-03.** The delivery upload authenticates with a password.
-5. **ALR-02.** Alert rows carry no link to logs and a single severity.
-6. **ALR-01.** Two of the four alert points have no failure-injection request.
+5. **ALR-02.** Closed 2026-10-07: alerts carry a log link and one of three severities. Open: the
+   severity names were chosen here and need checking against section 7 of the specification.
+6. **ALR-01.** Closed 2026-10-07: all four alert points have a failure-injection request.
 7. **EXT-04.** The S3 path puts the interval before layer and dataset; the specification's example has
    it after.
 

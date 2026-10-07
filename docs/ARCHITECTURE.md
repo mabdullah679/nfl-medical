@@ -105,7 +105,9 @@ read-only identities, the facts the gates decide on, so a Bruno request can asse
 `nfl_events`, which can INSERT and cannot read. A task that fails for good writes a row with
 `status='failed'` and `metrics.alert=true`, `severity`, `error_summary`; each retry writes a `retry` row.
 A run whose conf yields no interval writes its alert with NULL interval bounds. That table is the whole
-of local observability. Nothing is sent to CloudWatch and nobody is notified.
+of local observability as first built. Since 2026-10-07 every event also carries a `correlation_id`, alerts
+carry a severity and a link to the failed task's log, and section 5a describes what watches, delivers and
+ships logs.
 
 **Replication freshness.** Debezium writes one row to MySQL `hawks.replication_heartbeat` every 20 s.
 It travels the same path as data and lands in `staging.replication_heartbeat` as a new row per beat.
@@ -161,9 +163,11 @@ Read the last column first.
 
 | Production | Local | Fidelity | Cannot prove |
 |---|---|---|---|
-| Events and metrics store | Postgres table `observability.pipeline_event` | Contract | Retention, immutability, any managed metrics service. |
-| Dashboard | none; the table is readable through `/checks/events` and `/checks/lineage` | None | That any person can see pipeline state. |
-| Alerts to Operations | A `failed` row with `metrics.alert=true`, and a log line | Trigger only | That anyone is notified. No channel exists. |
+| Events and metrics store | Postgres tables `observability.pipeline_event`, `monitor_sample`, `alert_delivery` | Contract | Retention, immutability, any managed metrics service. |
+| Dashboard | none; the tables are readable through `/checks/events`, `/checks/lineage`, `/checks/trace` and `/checks/monitor` | None | That any person can see pipeline state. |
+| Alerts to Operations | A `failed` row with `metrics.alert=true`, emailed by `nfl-watch` to the local inbox `nfl-mail`, each attempt recorded in `alert_delivery` | Contract: a real SMTP send, read back | That anyone is notified. The agreed channels are not connected. |
+| Monitoring (CloudWatch alarms) | `nfl-watch` probing every 15 s into `monitor_sample` | Contract | Alarm configuration, metric retention, who watches the watcher. |
+| Logs (CloudWatch Logs) | `nfl-logship` (Vector) shipping container output and Airflow task logs to floci's CloudWatch Logs API | Contract: the real API shape, signed | Log drivers, retention, real filter-pattern syntax. floci treats a pattern as a substring and answers 200 for a missing group. |
 
 ### Platform
 
@@ -185,6 +189,8 @@ Postgres roles, from `infra/sql/03-roles.sql.tmpl` and `06-check-identities.sql.
 | `nfl_hop` | `nfl_ingestion` | SELECT on staging; read and write on utm. |
 | `nfl_spark` | `nfl_extraction` | SELECT on utm batch, dim and fact tables; read-only transactions. |
 | `nfl_events` | every DAG's event writer | INSERT on `observability.pipeline_event`. Cannot read it. |
+| `nfl_monitor` | `nfl-watch` probes | SELECT two columns of the heartbeat; SELECT, INSERT, DELETE on `monitor_sample`; INSERT on `pipeline_event`. Cannot read events. |
+| `nfl_notifier` | `nfl-watch` alert dispatch | SELECT on `pipeline_event`; SELECT, INSERT on `alert_delivery`. Cannot change or delete either. |
 | `nfl_stub_reader` | DMS stub | SELECT on the three replicated staging tables. |
 | `nfl_check_reconcile`, `nfl_check_quality`, `nfl_check_freshness`, `nfl_check_lineage`, `nfl_check_events` | one shim check each | SELECT on the columns that check reads, nothing else; read-only transactions. |
 | `nfl_admin` | the database container itself and `up.sh` | Superuser. Not held by Airflow, the shim, the stub or Kafka Connect. |
@@ -201,6 +207,30 @@ chrooted) and `nfl_check_delivery_sftp` (key pair, read-only); server host keys 
 **What is declared but not enforced locally:** S3 scope. The five S3-using checks and the two S3-using
 DAG stages each have their own variable names, and the role files carry an `aws_iam_policy` for each,
 but floci evaluates no policy, so every S3 call proves reachability and content only.
+
+## 5a. Observability as built (2026-10-07)
+
+Three containers were added; the stack is twelve.
+
+| Container | Image | Host port | Role |
+|---|---|---|---|
+| `nfl-watch` | built from `watch/` | none | Every 15 s: reads the end-to-end heartbeat, both connectors and Airflow's health; appends each reading to `observability.monitor_sample`; on a change of level appends an alert or a recovery to `pipeline_event`; then emails every event that asks for a notification and records the attempt in `alert_delivery`. |
+| `nfl-mail` | `axllent/mailpit:v1.31.4` | 127.0.0.1:8094 | The Operations inbox: accepts every message over SMTP and keeps it. Web UI and HTTP API. |
+| `nfl-logship` | `timberio/vector:0.59.0-alpine` | none | Ships `nfl-*` container output to log groups `/nfl/<container>` and Airflow task logs to `/nfl/airflow-tasks` on floci. Mounts the Docker socket; local stand-in only. |
+
+**One id through everything.** The caller passes `conf.correlation_id` to each of the three triggers. Every
+event row stores it, every DAG logs it, the alert email states it, and it is a valid CloudWatch filter term.
+`/checks/trace?correlation_id=` returns the attempt's events in order; a `FilterLogEvents` call with the id
+returns its log lines from all three DAGs. A run triggered without one uses `nfl_<start>_<end>`. A watcher
+incident uses `nfl_watch_<probe>_<epoch>` for its alert and its recovery.
+
+**The watcher is not an Airflow DAG**, because Airflow is one of the things it watches. A probe that
+cannot run holds its last level for three ticks and then becomes critical. It does not see an outage
+shorter than a tick, and nothing watches it except `/checks/monitor` when someone asks.
+
+**Alerting is an outbox.** The DAG failure hook only writes the row; `nfl-watch` delivers it. A send that
+fails is retried with backoff, and an alert with no successful delivery is red on
+`/checks/alerts/delivery`. A unique index allows one `sent` row per alert and channel.
 
 ## 6. Where to read more
 

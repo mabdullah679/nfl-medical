@@ -1,0 +1,35 @@
+meta {
+  name: 83 H6 RESTORE resume the Debezium connector
+  type: http
+  seq: 83
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+put {
+  url: {{connect_url}}/connectors/{{source_connector_name}}/resume
+  body: none
+  auth: none
+}
+
+tests {
+  test("Kafka Connect accepted the resume (HTTP 202)", function () {
+    expect(res.getStatus()).to.equal(202);
+  });
+}
+
+docs {
+  ## What this proves
+  RESTORE for `H2`. Safe to send at any time, including when the connector is already running.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `source_connector_name`, `connect_url` (environment)
+
+  ## When it fails
+  404: the connector name is wrong. 409: a rebalance is in progress, send again.
+}

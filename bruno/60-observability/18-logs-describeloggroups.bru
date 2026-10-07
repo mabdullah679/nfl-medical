@@ -1,0 +1,72 @@
+meta {
+  name: 18 Logs DescribeLogGroups
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{logs_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: Logs_20140328.DescribeLogGroups
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: logs
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {
+    "logGroupNamePrefix": "{{log_group_prefix}}/"
+  }
+}
+
+script:post-response {
+  const groups = ((res.getBody() && res.getBody().logGroups) || []).map(g => g.logGroupName);
+  bru.setVar("log_groups", groups);
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the components that always log each have a log group", function () {
+    const p = bru.getEnvVar("log_group_prefix");
+    const names = res.getBody().logGroups.map(g => g.logGroupName);
+    expect(names).to.include.members(["nfl-shim", "nfl-airflow", "nfl-kafka-connect", "nfl-dms-stub", "airflow-tasks"].map(n => p + "/" + n));
+  });
+  test("only this platform's groups were returned (the prefix filter was applied)", function () {
+    const p = bru.getEnvVar("log_group_prefix") + "/";
+    expect(res.getBody().logGroups.filter(g => !g.logGroupName.startsWith(p))).to.have.lengthOf(0);
+  });
+}
+
+docs {
+  ## What this proves
+  Logs outside Airflow are one request away. Every `nfl-*` container's output is shipped to CloudWatch Logs
+  as `{{log_group_prefix}}/<container>`, and the Airflow task logs as `{{log_group_prefix}}/airflow-tasks`
+  with one stream per DAG. This is the real CloudWatch Logs API, signed with SigV4 for service `logs`, so the
+  same request works against AWS. Asserted: the five groups of components that log continuously. A quiet
+  component (Postgres, MySQL, Kafka, the inbox, the watcher) gets its group with its first line after the
+  shipper started, so its presence is listed (`log_groups`) but not asserted.
+
+  ## Captures
+  - `log_groups`
+
+  ## Consumes
+  - `logs_endpoint`, `log_group_prefix`, `aws_region`, `aws_access_key_id`, `aws_secret_access_key` (environment)
+
+  ## When it fails
+  A group is missing: `docker logs nfl-logship`. Locally an absent group and an empty one look alike to
+  `FilterLogEvents` (floci answers 200 with no events for a group that does not exist), which is why this
+  request comes first.
+}

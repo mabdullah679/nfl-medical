@@ -1,0 +1,68 @@
+meta {
+  name: 14 Shim trace of the newest attempt
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{shim_url}}/checks/trace?correlation_id={{obs_correlation_id}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the check ran for the captured correlation id", function () {
+    expect(res.getBody().params.correlation_id).to.equal(bru.getVar("obs_correlation_id"));
+  });
+  test("verdict is pass: one thread covers all five stages and each ended in success", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    const m = res.getBody().measured;
+    expect(m.stages_with_events).to.deep.equal(["replication", "ingestion", "extraction", "reporting", "delivery"]);
+    expect(m.stages_missing_events).to.have.lengthOf(0);
+    expect(m.stages_failed).to.have.lengthOf(0);
+    expect(m.truncated).to.equal(false);
+  });
+  test("the thread joins a run of each of the three DAGs", function () {
+    const runs = res.getBody().measured.runs_by_dag;
+    for (const d of ["nfl_ingestion", "nfl_extraction", "nfl_reporting"]) {
+      expect(runs[d], d).to.be.an("array").with.length.of.at.least(1);
+    }
+  });
+  test("events are returned oldest first, and the stages appear in pipeline order", function () {
+    const ev = res.getBody().measured.events;
+    const times = ev.map(e => Date.parse(e.event_time));
+    expect(times).to.deep.equal(times.slice().sort((a, b) => a - b));
+    const first = s => ev.findIndex(e => e.stage === s);
+    const order = ["replication", "ingestion", "extraction", "reporting", "delivery"].map(first);
+    expect(order).to.deep.equal(order.slice().sort((a, b) => a - b));
+  });
+  test("no notification in the thread is left undelivered", function () {
+    expect(res.getBody().measured.undelivered_alert_event_ids).to.have.lengthOf(0);
+  });
+}
+
+docs {
+  ## What this proves
+  One attempt, end to end, as a single ordered list. Every event row carries a `correlation_id`; the three
+  triggers of an attempt pass the same one in `conf`, so this request returns the replication pre-check, the
+  ingestion result, the extraction publish, the report build and the delivery of ONE attempt, in time order,
+  with the run id of each DAG. `/checks/lineage` answers "did the interval complete"; this answers "what
+  happened in this attempt". Non-HTTP made sendable: SQL run by the read-only `nfl_check_trace` role.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `obs_correlation_id` from `02`
+
+  ## When it fails
+      `no event for extraction, reporting, delivery`: the newest ingestion run was sent on its own; send
+      `30-extraction`, `40-reporting` and `50-delivery` in the same session so they reuse its correlation id.
+      HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+  and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+  earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+  and `threshold` in the response body.
+}

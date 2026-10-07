@@ -66,12 +66,14 @@ set -a; . "$ENV_FILE"; set +a
 MISSING_VARS=()
 for v in MYSQL_LAG_CHECK_PASSWORD PG_STUB_PASSWORD PG_EVENTS_PASSWORD \
          PG_CHECK_RECONCILE_PASSWORD PG_CHECK_QUALITY_PASSWORD PG_CHECK_FRESHNESS_PASSWORD \
-         PG_CHECK_LINEAGE_PASSWORD PG_CHECK_EVENTS_PASSWORD; do
+         PG_CHECK_LINEAGE_PASSWORD PG_CHECK_EVENTS_PASSWORD PG_CHECK_TRACE_PASSWORD \
+         PG_CHECK_ALERT_DELIVERY_PASSWORD PG_CHECK_MONITOR_PASSWORD PG_MONITOR_PASSWORD \
+         PG_NOTIFIER_PASSWORD; do
   [ -n "${!v:-}" ] || MISSING_VARS+=("$v")
 done
 [ "${#MISSING_VARS[@]}" -eq 0 ] || die "$ENV_FILE is missing: ${MISSING_VARS[*]}
-    compare with infra/env.example.txt, or regenerate:
-      scripts/reset.sh -y && scripts/init-env.sh --force"
+    add the missing ones with fresh values, keeping every existing password:
+      scripts/init-env.sh --add-missing"
 
 # Guard the ports we claim. A port taken by another project on this machine
 # must stop us loudly rather than producing a half-started stack.
@@ -94,6 +96,7 @@ check_port "${NFL_AIRFLOW_PORT:-8095}"  airflow
 check_port "${NFL_SFTP_PORT:-2225}"     sftp
 check_port "${NFL_SHIM_PORT:-8096}"     shim
 check_port "${NFL_DMS_STUB_PORT:-8098}" dms-stub
+check_port "${NFL_MAIL_PORT:-8094}"     mail
 
 # floci is externally managed: never started here. Without it extraction,
 # reporting and five shim checks cannot work, so its absence is a FAILURE of
@@ -187,6 +190,8 @@ wait_healthy airflow-db    120 || FAILED+=(airflow-db)
 wait_healthy airflow       300 || FAILED+=(airflow)
 wait_healthy sftp           90 || FAILED+=(sftp)
 wait_healthy shim          120 || FAILED+=(shim)
+wait_healthy mail           90 || FAILED+=(mail)
+wait_healthy logship        90 || FAILED+=(logship)
 # dms-stub is waited for further down: its health is derived from the connector
 # and from its Postgres role, neither of which exists yet on a cold start.
 
@@ -243,16 +248,22 @@ echo "    postgres roles nfl_replication, nfl_hop, nfl_spark converged"
 
 export PG_STUB_PASSWORD PG_EVENTS_PASSWORD MYSQL_LAG_CHECK_PASSWORD \
        PG_CHECK_RECONCILE_PASSWORD PG_CHECK_QUALITY_PASSWORD PG_CHECK_FRESHNESS_PASSWORD \
-       PG_CHECK_LINEAGE_PASSWORD PG_CHECK_EVENTS_PASSWORD
+       PG_CHECK_LINEAGE_PASSWORD PG_CHECK_EVENTS_PASSWORD PG_CHECK_TRACE_PASSWORD \
+       PG_CHECK_ALERT_DELIVERY_PASSWORD PG_CHECK_MONITOR_PASSWORD PG_MONITOR_PASSWORD \
+       PG_NOTIFIER_PASSWORD
 render_sql "$INFRA/sql/06-check-identities.sql.tmpl" \
     CHANGEME_pg_check_reconcile=PG_CHECK_RECONCILE_PASSWORD \
     CHANGEME_pg_check_quality=PG_CHECK_QUALITY_PASSWORD \
     CHANGEME_pg_check_freshness=PG_CHECK_FRESHNESS_PASSWORD \
     CHANGEME_pg_check_lineage=PG_CHECK_LINEAGE_PASSWORD \
     CHANGEME_pg_check_events=PG_CHECK_EVENTS_PASSWORD \
+    CHANGEME_pg_check_trace=PG_CHECK_TRACE_PASSWORD \
+    CHANGEME_pg_check_alert_delivery=PG_CHECK_ALERT_DELIVERY_PASSWORD \
+    CHANGEME_pg_check_monitor=PG_CHECK_MONITOR_PASSWORD \
+    CHANGEME_pg_monitor=PG_MONITOR_PASSWORD CHANGEME_pg_notifier=PG_NOTIFIER_PASSWORD \
     CHANGEME_pg_stub=PG_STUB_PASSWORD CHANGEME_pg_events=PG_EVENTS_PASSWORD \
   | pg_apply || die "could not apply infra/sql/06-check-identities.sql.tmpl"
-echo "    postgres roles nfl_stub_reader, nfl_events and the five nfl_check_* roles converged"
+echo "    postgres roles nfl_stub_reader, nfl_events, nfl_monitor, nfl_notifier and the eight nfl_check_* roles converged"
 
 render_sql "$INFRA/mysql/init/03-lag-check-user.sql.tmpl" \
     CHANGEME_mysql_lag_check=MYSQL_LAG_CHECK_PASSWORD \
@@ -318,6 +329,8 @@ done
 # The stub's health is derived from the source connector and from a query as
 # nfl_stub_reader; both exist only now.
 wait_healthy dms-stub 120 || FAILED+=(dms-stub)
+# The watcher logs in as nfl_monitor and nfl_notifier, which exist only now.
+wait_healthy watch 120 || FAILED+=(watch)
 
 # ---------------------------------------------------------------------------
 say "Proving the shim and stub reach their backing stores"
@@ -360,6 +373,9 @@ probe_ran "reconcile role"               "$SHIM/checks/ingestion/reconcile?$INTE
 probe_ran "quality role"                 "$SHIM/checks/ingestion/quality?$INTERVAL"
 probe_ran "lineage role"                 "$SHIM/checks/lineage?$INTERVAL"
 probe_ran "events role"                  "$SHIM/checks/events?$INTERVAL"
+probe_ran "trace role"                   "$SHIM/checks/trace?correlation_id=nfl_up_probe"
+probe_ran "alert delivery role"          "$SHIM/checks/alerts/delivery"
+probe_ran "monitor role + watcher"       "$SHIM/checks/monitor" 60
 probe_ran "sftp key + pinned host key"   "$SHIM/checks/delivery/sftp?$INTERVAL&report=up-probe.csv"
 if [ "$FLOCI_UP" = yes ]; then
   # floci enforces no IAM: this proves the bucket is reachable, not that an
@@ -391,6 +407,8 @@ cat <<EOF
     Postgres         localhost:${NFL_POSTGRES_PORT:-5440}  db=nfl
     MySQL            localhost:${NFL_MYSQL_PORT:-3307}  db=${MYSQL_DATABASE:-hawks}
     Kafka            localhost:${NFL_KAFKA_PORT:-9099}
+    Operations inbox http://localhost:${NFL_MAIL_PORT:-8094}   (every alert email; API under /api/v1)
+    Logs             $S3_ENDPOINT  CloudWatch Logs groups /nfl/<container>, /nfl/airflow-tasks
     SFTP             localhost:${NFL_SFTP_PORT:-2225}  upload user=${SFTP_USER}  (host keys pinned: infra/keys/sftp/known_hosts)
     floci (external) $S3_ENDPOINT  bucket=$S3_BUCKET
 

@@ -1,0 +1,73 @@
+meta {
+  name: 85 H8 One incident thread: alert, then recovery, both delivered
+  type: http
+  seq: 85
+  tags: [
+    chaos
+    local-only
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/trace?correlation_id={{chaos_watch_incident}}
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const path = "/checks/trace?correlation_id=" + bru.getVar("chaos_watch_incident");
+  await poll.waitForShim(bru, path, function (b) {
+    const ev = (b.measured && b.measured.events) || [];
+    return ev.length >= 2 && ev.every(function (e) { return e.delivery && e.delivery.state === "sent"; });
+  });
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the incident's thread is the alert followed by its recovery, nothing else", function () {
+    const ev = res.getBody().measured.events;
+    expect(ev.map(e => e.status)).to.deep.equal(["failed", "success"]);
+    expect(ev.map(e => e.step)).to.deep.equal(["watch_connector_status", "watch_connector_status"]);
+    expect(ev[0].event_id).to.equal(bru.getVar("chaos_watch_alert_event_id"));
+  });
+  test("the alert is critical and the recovery is info: two of the three severities", function () {
+    const ev = res.getBody().measured.events;
+    expect(ev[0].alert).to.equal(true);
+    expect(ev[0].severity).to.equal("critical");
+    expect(ev[1].alert).to.equal(false);
+    expect(ev[1].severity).to.equal("info");
+    expect(ev[1].message.startsWith("recovered: ")).to.equal(true);
+  });
+  test("the alert points at the log group to read", function () {
+    expect(res.getBody().measured.events[0].log_group).to.equal(bru.getEnvVar("log_group_prefix") + "/nfl-kafka-connect");
+  });
+  test("both were delivered", function () {
+    for (const e of res.getBody().measured.events) {
+      expect(e.delivery.state, e.status).to.equal("sent");
+    }
+    expect(res.getBody().measured.undelivered_alert_event_ids).to.have.lengthOf(0);
+  });
+}
+
+docs {
+  ## What this proves
+  An incident is one thread with a beginning and an end. The alert and the recovery share the incident id,
+  carry different severities (`critical`, then `info`), and each was delivered. On this endpoint `ok` is
+  false for an incident thread, because it has no pipeline stages; the assertions are on the events.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_watch_incident` from `H3`
+  - `chaos_watch_alert_event_id` from `H4`
+
+  ## When it fails
+  One event only after the poll timeout: the watcher did not record the recovery. HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

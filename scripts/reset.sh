@@ -56,6 +56,9 @@ cat <<EOF
     nfl_airflow-db-data  DAG run history
     nfl_airflow-logs     task logs
     nfl_sftp-upload      delivered report files
+    nfl_mail-data        the Operations inbox (every alert email)
+    nfl_logship-data     the log shipper's read positions
+    log groups /nfl/*    shipped container and task logs, in floci's CloudWatch Logs
     s3://$S3_BUCKET   keys under df_*/, reports/, _tmp/, _fixtures/ only
                          (via the floci endpoint $S3_ENDPOINT)
 
@@ -95,6 +98,34 @@ else
     Volumes are already gone. Start floci and re-run scripts/reset.sh, otherwise
     old markers, parquet and reports would survive into the next cold start."
 fi
+
+say "Deleting shipped logs (CloudWatch Logs groups /nfl/*)"
+# Only groups under the /nfl/ prefix, one DeleteLogGroup each. Old log lines
+# must not survive into a cold start any more than old S3 markers may.
+logs_call() {
+  curl -fsS --max-time 15 -X POST "$S3_ENDPOINT/" \
+    --aws-sigv4 "aws:amz:${AWS_REGION_FOR_LOGS}:logs" --user "${LOGS_KEY}:${LOGS_SECRET}" \
+    -H 'Content-Type: application/x-amz-json-1.1' -H "X-Amz-Target: Logs_20140328.$1" -d "$2"
+}
+AWS_REGION_FOR_LOGS="$(sed -n 's/^AWS_DEFAULT_REGION=//p' "$ENV_FILE" | head -1)"; AWS_REGION_FOR_LOGS="${AWS_REGION_FOR_LOGS:-us-east-1}"
+LOGS_KEY="$(sed -n 's/^AWS_ACCESS_KEY_ID=//p' "$ENV_FILE" | head -1)"; LOGS_KEY="${LOGS_KEY:-test}"
+LOGS_SECRET="$(sed -n 's/^AWS_SECRET_ACCESS_KEY=//p' "$ENV_FILE" | head -1)"; LOGS_SECRET="${LOGS_SECRET:-test}"
+GROUPS_JSON="$(logs_call DescribeLogGroups '{"logGroupNamePrefix":"/nfl/"}')" \
+  || die "could not list log groups on $S3_ENDPOINT"
+printf '%s' "$GROUPS_JSON" | python3 -c '
+import json, sys
+for g in json.load(sys.stdin).get("logGroups", []):
+    name = g["logGroupName"]
+    if name.startswith("/nfl/"):
+        print(name)
+' | while IFS= read -r group; do
+  logs_call DeleteLogGroup "{\"logGroupName\":\"$group\"}" >/dev/null \
+    || die "could not delete log group $group"
+  echo "    deleted $group"
+done
+LEFT_GROUPS="$(logs_call DescribeLogGroups '{"logGroupNamePrefix":"/nfl/"}' | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("logGroups", [])))')"
+[ "$LEFT_GROUPS" = 0 ] || die "$LEFT_GROUPS log group(s) under /nfl/ remain"
+echo "    no log group under /nfl/ remains"
 
 say "Clearing rendered secrets"
 rm -f "$INFRA/secrets/connect-secrets.properties"

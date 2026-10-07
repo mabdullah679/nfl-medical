@@ -1,0 +1,77 @@
+meta {
+  name: 21 Logs: one attempt across the three DAGs
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{logs_endpoint}}/
+  body: json
+  auth: awsv4
+}
+
+headers {
+  Content-Type: application/x-amz-json-1.1
+  X-Amz-Target: Logs_20140328.FilterLogEvents
+}
+
+auth:awsv4 {
+  accessKeyId: {{aws_access_key_id}}
+  secretAccessKey: {{aws_secret_access_key}}
+  sessionToken: 
+  service: logs
+  region: {{aws_region}}
+  profileName: 
+}
+
+body:json {
+  {
+    "logGroupName": "{{log_group_prefix}}/airflow-tasks",
+    "filterPattern": "{{obs_correlation_id}}",
+    "limit": 500
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("the thread's id is in the task logs of all three DAGs", function () {
+    const streams = Array.from(new Set(res.getBody().events.map(e => e.logStreamName))).sort();
+    expect(streams).to.include.members(["nfl_extraction", "nfl_ingestion", "nfl_reporting"]);
+  });
+  test("every line returned carries the id, and says which task and run wrote it", function () {
+    const ev = res.getBody().events;
+    expect(ev.length).to.be.at.least(3);
+    for (const e of ev) {
+      expect(e.message).to.include(bru.getVar("obs_correlation_id"));
+      expect(e.message).to.match(/^[a-z_]+ try=\d+ run=\S+ \| /);
+    }
+  });
+  test("each DAG's validate_conf announced the id, and each stage's event line repeats it", function () {
+    const text = res.getBody().events.map(e => e.message);
+    for (const d of ["bruno_ingestion_", "bruno_extraction_", "bruno_reporting_"]) {
+      expect(text.some(m => m.startsWith("validate_conf ") && m.includes("run=" + d)), d).to.equal(true);
+    }
+    expect(text.filter(m => m.includes("event recorded: correlation_id=" + bru.getVar("obs_correlation_id"))).length).to.be.at.least(5);
+  });
+}
+
+docs {
+  ## What this proves
+  The same id that threads the events (`14`) threads the logs. One `FilterLogEvents` call with the
+  correlation id as the pattern returns the lines of that attempt from the task logs of `nfl_ingestion`,
+  `nfl_extraction` and `nfl_reporting`, each prefixed with the task, attempt and run that wrote it. The id is
+  letters, digits and underscores only, so it is a valid unquoted CloudWatch filter term.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `obs_correlation_id` from `02`
+  - `logs_endpoint`, `log_group_prefix` (environment)
+
+  ## When it fails
+  A DAG is missing from the streams: that stage was not triggered with this id (see `14`), or its task logs
+  have not been shipped yet (send again after a few seconds).
+}

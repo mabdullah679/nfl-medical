@@ -1,0 +1,51 @@
+meta {
+  name: 92 K6 The report process alert was delivered
+  type: http
+  seq: 92
+  tags: [
+    chaos
+  ]
+}
+
+get {
+  url: {{shim_url}}/checks/alerts/delivery?since_minutes=30&run_id={{chaos_gate_dag_run_id}}
+  body: none
+  auth: none
+}
+
+script:pre-request {
+  const poll = require("./lib/poll.js");
+  const path = "/checks/alerts/delivery?since_minutes=30&run_id=" + encodeURIComponent(bru.getVar("chaos_gate_dag_run_id"));
+  await poll.waitForShim(bru, path, function (b) { return b.ok === true; });
+}
+
+tests {
+  test("the check ran (HTTP 200, not 503 could-not-run or 422)", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("verdict is pass: the alert was delivered within a minute", function () {
+    expect(res.getBody().ok, res.getBody().summary).to.equal(true);
+    const ev = res.getBody().measured.events;
+    expect(ev).to.have.lengthOf(1);
+    expect(ev[0].step).to.equal("is_process_failed");
+    expect(ev[0].delivery_state).to.equal("sent");
+    expect(ev[0].seconds_to_delivery).to.be.a("number").at.most(60);
+  });
+}
+
+docs {
+  ## What this proves
+  The report process alert reached the Operations channel.
+
+  ## Captures
+  Nothing.
+
+  ## Consumes
+  - `chaos_gate_dag_run_id` from `K3`
+
+  ## When it fails
+  HTTP 503 means the check COULD NOT RUN (dependency down or credential rejected): read `error` in the body
+    and `docker logs nfl-shim`. HTTP 422 means a parameter is missing, usually because the capturing request
+    earlier in this folder was not sent. HTTP 200 with `ok: false` is a real verdict: read `summary`, `measured`
+    and `threshold` in the response body.
+}

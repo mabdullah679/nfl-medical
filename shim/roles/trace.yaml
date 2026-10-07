@@ -1,0 +1,46 @@
+endpoint: /checks/trace
+check: trace
+summary: Every event that carries one correlation id, oldest first, with each alert's delivery state and log links.
+identity:
+  kind: postgres_role
+  name: nfl_check_trace
+  scope: >
+    NFL Postgres as the dedicated read-only role nfl_check_trace. Reads whole rows of
+    observability.pipeline_event and observability.alert_delivery. Nothing in staging
+    or utm.
+credential_env: SHIM_TRACE_PG_DSN
+dependencies:
+  - nfl_postgres
+grants:
+  - "CREATE ROLE nfl_check_trace LOGIN PASSWORD '<secret>';"
+  - "GRANT CONNECT ON DATABASE nfl TO nfl_check_trace;"
+  - "GRANT USAGE ON SCHEMA observability TO nfl_check_trace;"
+  - "ALTER ROLE nfl_check_trace SET default_transaction_read_only = on;"
+  - "GRANT SELECT ON observability.pipeline_event TO nfl_check_trace;"
+  - "GRANT SELECT ON observability.alert_delivery TO nfl_check_trace;"
+grants_rationale: >
+  The thread is returned event by event with its message, log links and the delivery
+  state of each notification, so it needs the event rows and the delivery attempts.
+  It is a separate identity from events because it also reads alert_delivery.
+local_enforcement: >
+  ENFORCED by Postgres when the DSN in $SHIM_TRACE_PG_DSN logs in as nfl_check_trace with
+  exactly the grants above: the role authenticates with its own password, can SELECT
+  only what is listed, and cannot write. The shim refuses to start if that DSN
+  carries any other user, or a user another endpoint also carries. NOT verified by the
+  shim: that the database holds no EXTRA grant for this role; that is the DDL's job
+  (infra/sql) and is audited with \dp, not by this service.
+aws_iam_policy:
+  Version: "2012-10-17"
+  Statement:
+    - Sid: ConnectAsTraceRole
+      Effect: Allow
+      Action:
+        - rds-db:connect
+      Resource:
+        - arn:aws:rds-db:${AWS_REGION}:${AWS_ACCOUNT_ID}:dbuser:${NFL_PG_RESOURCE_ID}/nfl_check_trace
+    - Sid: ReadOwnSecret
+      Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:nfl/shim/trace-*
