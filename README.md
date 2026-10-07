@@ -67,6 +67,8 @@ Measured again 2026-10-07 UTC after the observability work, on a wiped and cold-
 | `stub/` | DMS-shaped API on port 8098 for request-shape tests; replicates nothing |
 | `watch/` | the watcher: probes replication and the orchestrator every 15 s, raises alerts on its own, delivers every alert by email |
 | `bruno/` | the test collection: 195 requests, 109 in the normal run and 86 in `90-chaos` |
+| `FROM-NOTHING.txt` | every command a fresh start needs, one line of explanation each |
+| `WHAT-DOES-WHAT.txt` | each major piece, what it does, and the file and line of its code |
 | `docs/ARCHITECTURE.md` | every container and port, and what each stand-in cannot prove |
 | `docs/RUNBOOK.md` | start, stop, reset, run, read a failure, rerun an interval, inject failures |
 | `docs/COVERAGE.md` | all 61 requirement IDs against what exercises them |

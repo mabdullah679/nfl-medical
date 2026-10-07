@@ -89,6 +89,9 @@ Intervals are inclusive calendar days, `YYYYMMDD` or `YYYY-MM-DD`.
 | `GET /checks/delivery/sftp` | `interval_start`, `interval_end`, `report` | the file is on SFTP under its final name, no temp name left, size and sha256 equal the S3 report |
 | `GET /checks/lineage` | `interval_start`, `interval_end` | all five stages have events for EXACTLY this interval (`interval_start` = start AND `interval_end` = end) and each stage's latest terminal event is `success` |
 | `GET /checks/events` | `interval_start` + `interval_end`, or `unscoped=true`; optional `status`, `stage`, `alerts_only`, `limit` | at least one event matches. A listing, not a health verdict: use `lineage` for that |
+| `GET /checks/trace` | `correlation_id` | the thread has events, all five stages are present, each stage's latest outcome is a success and no notification is undelivered. For a watcher incident the events are the answer and `ok` is false |
+| `GET /checks/alerts/delivery` | optional `since_minutes` (60), `run_id`, `correlation_id` | no notifiable event in the window is undelivered, abandoned or still pending; with a filter, at least one event must match |
+| `GET /checks/monitor` | — | every watcher probe has a sample younger than `SHIM_MONITOR_MAX_SAMPLE_AGE_SECONDS` (45) and each is `ok`. `measured.watcher_alive` separates "the watcher stopped" from "the watcher found a problem" |
 
 The three table pairs (`shim/config.py` `TABLE_PAIRS`, mirroring `infra/sql/01`, `02` and
 the ingestion DAG):
@@ -326,6 +329,15 @@ First round (earlier code, same day; not re-run in the fix round):
 - Role boundaries: `nfl_check_replication_lag` SELECT refused (1142) and `SHOW BINLOG
   EVENTS` refused (1227); SFTP checker write and mkdir refused, password login refused;
   a wrong pinned host key refused (`BadHostKeyException`).
+
+## Added 2026-10-07: trace, alerts/delivery, monitor
+
+Code: `shim/checks/observability.py`. Each has its own read-only role and role file. Proven on the live
+stack through the Bruno collection (`60-observability/14` to `16`, `90-chaos` scenarios B, H, J, K) and by
+hand: with the mail server stopped `/checks/alerts/delivery` read `pending`, then `undelivered` and red,
+then `sent` after it came back; with `nfl-watch` stopped `/checks/monitor` read `watcher_alive: false`
+after 45 s. Mutation: with events written without a correlation id, `/checks/trace` for the newest
+attempt went red.
 
 ## Not established
 

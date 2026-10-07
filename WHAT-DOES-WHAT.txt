@@ -1,0 +1,215 @@
+WHAT DOES WHAT
+Each major piece, what it does, and where its code is. Written 2026-10-07.
+References are file:line and were taken from the tree that day; if a line has moved, search for the name.
+
+
+THE PIPELINE IN ONE BREATH
+MySQL (the source) -> Debezium copies changes -> Postgres staging -> ingestion loads staging into utm ->
+extraction writes Parquet to S3 -> reporting builds a CSV report -> delivery uploads it to SFTP.
+Airflow runs the three middle steps. A watcher looks at the whole thing on a timer and emails alerts.
+A check shim and a Bruno collection let you ask any of it a question over HTTP.
+
+Stand-ins, so nobody is misled: Debezium stands in for AWS DMS, Python/SQL inside Airflow stands in for
+Apache Hop and Spark, floci stands in for AWS (S3 and CloudWatch Logs), a local mail server stands in for
+the Operations alert channel. The contract between stages is real; those engines are not.
+
+
+1. SCRIPTS: start, stop, wipe
+  scripts/init-env.sh      Generates infra/nfl.env (25 secrets) and the SFTP keys. Never prints a value.
+                           --add-missing appends new secrets to an older file: scripts/init-env.sh:93
+  scripts/up.sh            Brings the 12 containers up and refuses to say "up" unless everything is.
+                           Applies schemas, roles and grants on every start: scripts/up.sh:207
+                           Proves every check identity can log in:          scripts/up.sh:336
+  scripts/down.sh          Stops the stack, keeps the data.
+  scripts/reset.sh         Destroys the stack's data, including the inbox and shipped logs: scripts/reset.sh:102
+  scripts/s3_bucket.py     Creates the S3 bucket and, on reset, deletes only the pipeline's own keys.
+  infra/docker-compose.yml The 12 containers. Every port binds 127.0.0.1 only.
+
+
+2. SOURCE DATABASE: MySQL, container nfl-mysql, port 3307
+  What it does   Holds the source rows (patient accounts, transactions, payments) with the binlog on.
+  Code           infra/docker-compose.yml:40
+                 infra/mysql/init/01-source-schema.sql         the three source tables
+                 infra/sql/04-seed.sql                         seed rows: August clean, September deliberately bad
+                 infra/mysql/init/04-replication-heartbeat.sql a row rewritten every minute, used to measure lag
+
+
+3. REPLICATION: Kafka + Kafka Connect (Debezium), containers nfl-kafka, nfl-kafka-connect, port 8097
+  What it does   Reads MySQL's binlog and inserts every change into Postgres staging. Stand-in for AWS DMS.
+  Code           infra/docker-compose.yml:117 (kafka), :171 (kafka-connect)
+                 infra/debezium/mysql-source.json   which tables are captured
+                 infra/debezium/jdbc-sink.json      where they land
+  Ask it         curl -s localhost:8097/connectors/nfl-hawks-mysql-source/status
+
+
+4. PIPELINE DATABASE: Postgres, container nfl-postgres, port 5440, database nfl
+  What it does   Three schemas. staging = what replication landed. utm = the cleaned model.
+                 observability = events, watcher samples, alert deliveries.
+  Code           infra/docker-compose.yml:77
+                 infra/sql/01-staging-schema.sql, 02-utm-schema.sql
+                 infra/sql/03-roles.sql.tmpl            the three pipeline roles (replication, hop, spark)
+                 infra/sql/06-check-identities.sql.tmpl one read-only role per check, plus the watcher's two roles
+                 infra/sql/05-observability.sql:14      pipeline_event: one row per stage outcome, retry, alert
+                 infra/sql/05-observability.sql:53      correlation_id: the id that threads one attempt
+                 infra/sql/05-observability.sql:81      monitor_sample: what the watcher measured each tick
+                 infra/sql/05-observability.sql:101     alert_delivery: every attempt to send an alert
+
+
+5. ORCHESTRATOR: Airflow, containers nfl-airflow and nfl-airflow-db, port 8095
+  What it does   Runs the three DAGs when triggered through its REST API. Nothing is on a schedule.
+  Code           infra/docker-compose.yml:239 (airflow), :213 (its own metadata database)
+
+  Shared plumbing, infra/airflow/dags/nfl_common.py
+                 :120  interval_from_conf        reads and validates the interval a run was given
+                 :136  correlation_from_context  the correlation id of the run (from conf, or nfl_<start>_<end>)
+                 :165  log_links                 the links to a task's log that every alert carries
+                 :194  pg                        a database connection as exactly one role
+                 :214  s3                        an S3 client under one stage's key
+                 :277  record_event              writes one row to observability.pipeline_event
+                 :333  make_failure_hook         THE alert: runs when a task has used all its retries
+                 :374  make_retry_hook           writes a retry row each time a gate retries
+
+  Ingestion (stand-in for Apache Hop), infra/airflow/dags/nfl_ingestion.py
+                 :288  pre_check             connectors running, heartbeat fresh, staging has rows
+                 :396  load_staging_to_utm   upserts good rows, writes bad rows to the reject table
+                 :455  data_quality          reconciles counts, finds null and duplicate keys
+                 :550  is_failed_gate        "Is Failed": fails the run if anything was rejected
+                 :591  the DAG and its task order
+
+  Extraction (stand-in for Spark), infra/airflow/dags/nfl_extraction.py
+                 :205  pre_check_ingestion   refuses to run for an interval whose ingestion failed
+                 :225  is_utm                "Is UTM": data present and complete, with retries
+                 :261  write_parquet_temp    writes Parquet under a temporary S3 prefix
+                 :313  publish               moves it into place, writes manifest.json, then _SUCCESS last
+                 :399  the DAG and its task order
+
+  Reporting and delivery, infra/airflow/dags/nfl_reporting.py
+                 :95   wait_for_success_marker  waits for extraction's _SUCCESS, with retries
+                 :124  build_report             builds the CSV report and its checksum
+                 :200  is_process_failed        "Is Process Failed": report must agree with the manifest
+                 :311  deliver_sftp             uploads under a temp name, verifies, renames
+                 :388  capture_events           records the delivery event
+                 :416  the DAG and its task order
+
+
+6. OBJECT STORE AND LOG STORE: floci, port 4566 (NOT part of this project; nothing here starts it)
+  What it does   Pretends to be AWS. The stack uses its S3 (Parquet, manifest, marker, reports) and its
+                 CloudWatch Logs (shipped logs under /nfl/).
+  Know this      It accepts any access key and enforces no permissions. Its log filter is a plain substring
+                 match and it answers 200 for a log group that does not exist. Real AWS does none of that.
+
+
+7. DELIVERY TARGET: SFTP, container nfl-sftp, port 2225
+  What it does   Receives the report. One upload account, one read-only key-only account for checking.
+  Code           infra/docker-compose.yml:366, infra/sftp/sshd_config
+
+
+8. THE WATCHER: container nfl-watch, no host port
+  What it does   Every 15 seconds, without being asked: measures the replication heartbeat, both connectors
+                 and Airflow's health, saves each measurement, raises an alert when one goes bad and a
+                 recovery when it comes back. It also emails every alert, its own and the DAGs', and records
+                 each attempt. It is not an Airflow DAG because Airflow is one of the things it watches.
+  Code           infra/docker-compose.yml:550, watch/app.py
+                 :124  probe_heartbeat      lag: age of the newest heartbeat (warning over the limit, critical over 2x)
+                 :166  probe_connectors     critical if a connector or its task is not RUNNING
+                 :210  probe_orchestrator   critical if Airflow's scheduler or metadata database is unhealthy
+                 :256  settle               decides the level; a probe that cannot run 3 times becomes critical
+                 :274  record               saves the sample, writes the alert or recovery on a change
+                 :353  compose              builds the alert email
+                 :401  dispatch             sends undelivered alerts, retries with backoff, records every attempt
+                 :475  tick                 one pass: probes, then dispatch
+  Its two roles  infra/sql/06-check-identities.sql.tmpl:138 (nfl_monitor), :149 (nfl_notifier)
+  Limits         Does not see an outage shorter than 15 seconds. Nothing watches it unless you ask
+                 /checks/monitor. A mail outage is not itself alerted; it shows as undelivered.
+
+
+9. THE OPERATIONS INBOX: Mailpit, container nfl-mail, port 8094
+  What it does   A mail server that accepts every alert email and keeps it. Stand-in for the real channel.
+                 Nobody is paged.
+  Code           infra/docker-compose.yml:518
+  Ask it         open http://localhost:8094      or      curl -s 'localhost:8094/api/v1/messages?limit=5'
+
+
+10. THE LOG SHIPPER: Vector, container nfl-logship, no host port
+  What it does   Copies every nfl-* container's output and the Airflow task logs into CloudWatch Logs on
+                 floci: /nfl/<container> and /nfl/airflow-tasks (one stream per DAG).
+  Code           infra/docker-compose.yml:596, infra/logship/vector.yaml
+  Know this      It mounts the Docker socket, which is root on the Docker host for whoever controls that
+                 container. Local only; it does not exist in AWS.
+
+
+11. THE CHECK SHIM: container nfl-shim, port 8096
+  What it does   Turns every check that is not HTTP by nature (SQL, binlog position, Parquet files, SFTP)
+                 into a GET. Each check logs in as its own read-only identity. HTTP 200 means the check ran
+                 and "ok" is the verdict; 503 means it could not run and is never a pass.
+  Code           infra/docker-compose.yml:416
+                 shim/main.py:98            /health
+                 shim/main.py:174           /checks, the index of every check
+                 shim/roles.py:243          refuses to start if a credential is missing, wrong or shared
+                 shim/result.py:93          the "could not run" answer (503)
+                 shim/roles/*.yaml          one file per check: its identity, its grants, its AWS policy
+                 shim/checks/replication.py connector status, source capture lag
+                 shim/checks/ingestion.py   reconcile, quality, freshness
+                 shim/checks/extraction.py  S3 marker, manifest, Parquet row counts
+                 shim/checks/reporting.py   the report file and its checksum
+                 shim/checks/delivery.py    the file on SFTP
+                 shim/checks/lineage.py:34  did every stage finish for this interval
+                 shim/checks/events.py:41   the raw event and alert rows
+                 shim/checks/observability.py:58   /checks/trace            one attempt as a single ordered thread
+                 shim/checks/observability.py:216  /checks/alerts/delivery  was every alert delivered
+                 shim/checks/observability.py:347  /checks/monitor          is the watcher alive, what did it measure
+
+
+12. THE DMS STUB: container nfl-dms-stub, port 8098
+  What it does   Answers in AWS DMS's request shape so DMS-style requests can be tested. Replicates nothing;
+                 the status it reports is the Debezium connector's.
+  Code           infra/docker-compose.yml:483, stub/app.py:541, stub/README.md
+
+
+13. THE BRUNO COLLECTION: bruno/
+  What it does   195 requests. One request per fact you can check. A request that needs a value from an
+                 earlier one captures it itself; nothing is pasted by hand.
+  Folders        00-preflight      9   is everything answering
+                 10-replication   10   connectors, DMS-shaped calls, lag
+                 20-ingestion     14   trigger ingestion, check the result
+                 30-extraction    20   trigger extraction, check S3
+                 40-reporting     15   trigger reporting, check the report
+                 50-delivery      19   the file on SFTP, and a forced redelivery
+                 60-observability 22   history, lineage, events, one attempt as a thread, alert delivery,
+                                       the watcher, the inbox, the logs
+                 90-chaos         86   ten failures injected on purpose, each checked and restored
+  Code           bruno/environments/local.bru  every address and setting (aws.bru holds placeholders, never run)
+                 bruno/lib/poll.js:12          waits for a DAG run to finish
+                 bruno/lib/poll.js:65          waits for a shim check to reach a state
+                 bruno/lib/guards.js           stops the two destructive S3 requests unless a baseline was captured
+                 bruno/README.md               run order, every scenario, what captures what
+
+
+14. ONE ID THROUGH EVERYTHING: the correlation id
+  What it does   The caller passes conf.correlation_id to each of the three triggers. Every event row, every
+                 task log and every alert email carries it, so one id finds everything about one attempt.
+                 A run triggered without one uses nfl_<start>_<end>. A watcher incident uses
+                 nfl_watch_<probe>_<epoch> for its alert and its recovery.
+  Code           infra/airflow/dags/nfl_common.py:136, infra/sql/05-observability.sql:53
+  Ask it         curl -s 'localhost:8096/checks/trace?correlation_id=<id>'
+
+
+15. AN ALERT, START TO FINISH
+  1. A task uses its last retry, or the watcher sees a probe go bad.
+  2. A row is written to observability.pipeline_event with alert = true, a severity (critical, warning or
+     info), the error summary and the log links.
+     infra/airflow/dags/nfl_common.py:333 or watch/app.py:274
+  3. Within one tick the watcher emails it and records the attempt.   watch/app.py:401
+  4. It is in the inbox (http://localhost:8094) and on /checks/alerts/delivery as "sent".
+  If the send fails it is retried after 30 s, 60 s, 120 s and so on, ten attempts, then marked abandoned,
+  which stays red on the check.
+
+
+16. THE DOCUMENTS
+  FROM-NOTHING.txt       the commands for a fresh start
+  README.md              what this is and what it does not prove
+  docs/RUNBOOK.md        day-to-day: run, read a failure, rerun an interval, read alerts and logs
+  docs/ARCHITECTURE.md   every container and what each stand-in cannot prove
+  docs/COVERAGE.md       all 61 requirements against the request that exercises each
+  docs/DECISIONS.md      why it is built this way (D-013 to D-015 are the observability work)
+  bruno/README.md, shim/README.md, infra/README.md, stub/README.md, watch/README.md

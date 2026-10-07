@@ -1,11 +1,82 @@
-cd /Users/muhammadabdullah/Documents/Abdullah-Projects/nfl-medical
+FROM NOTHING
+Every command a fresh start needs, in order, each followed by what it does.
+Last run end to end on 2026-10-07 (reset, cold start, all three Bruno runs green).
+
+
+1. BEFORE ANYTHING
+
+cd nfl-medical
 Moves into the repo, because every command below is run from its root.
+
+docker compose version
+Confirms Docker is running and has compose v2 or later.
+
+python3 --version && curl --version | head -1 && command -v lsof ssh-keygen
+Confirms the four tools the scripts need; init-env.sh and up.sh stop with a named error if one is missing.
+
+npm install -g @usebruno/cli
+Installs the bru command that runs the Bruno collection from a terminal (measured with 4.2.0); skip it if "bru --version" already answers.
 
 curl -fsS http://localhost:4566/_localstack/health
 Confirms floci, the local AWS emulator the stack depends on but does not start, is answering on port 4566.
 
+
+2. START THE STACK
+
 scripts/init-env.sh
-Generates infra/nfl.env with 20 random secrets plus the SFTP host and checker keys, without printing any value and without any manual editing.
+Generates infra/nfl.env with 25 random secrets plus the SFTP host and checker keys, without printing any value and without any manual editing.
 
 scripts/up.sh
-Creates the S3 bucket if missing, builds and starts the 9 NFL containers, applies schemas, roles and grants, registers both Debezium connectors, and exits 0 only when every service is healthy and every check identity has authenticated.
+Creates the S3 bucket if missing, builds and starts the 12 NFL containers, applies schemas, roles and grants, registers both Debezium connectors, and exits 0 only when every service is healthy and every check identity has authenticated (about 100 seconds cold).
+
+
+3. RUN THE TESTS
+
+cd bruno
+Moves into the collection, because bru reads the folder it is run from.
+
+set -a; . ../infra/nfl.env; set +a
+Loads the generated secrets into this shell without printing them.
+
+bru run -r --exclude-tags chaos --env local --env-var "airflow_password=${AIRFLOW_ADMIN_PASSWORD}" --env-var "aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}"
+The normal run: drives August 2026 through ingestion, extraction, reporting and delivery, then checks events, alerts, the watcher and the logs (109 requests, 344 tests, about a minute).
+
+bru run 90-chaos --env local --env-var "airflow_password=${AIRFLOW_ADMIN_PASSWORD}" --env-var "aws_secret_access_key=${AWS_SECRET_ACCESS_KEY}"
+The chaos run: breaks ten things on purpose, checks each one is noticed and alerted, and restores each one (86 requests, 233 tests, about three minutes). Run it only after a green normal run.
+
+cd ..
+Back to the repo root.
+
+
+4. LOOK AT IT
+
+open http://localhost:8094
+The Operations inbox: every alert email the stack sent, newest first.
+
+open http://localhost:8095
+The Airflow UI; the user is nfladmin and the password is AIRFLOW_ADMIN_PASSWORD in infra/nfl.env.
+
+curl -s localhost:8096/checks/monitor
+Asks whether the watcher is alive and what its three probes last measured.
+
+curl -s 'localhost:8096/checks/alerts/delivery?since_minutes=1440'
+Lists every alert of the last day and whether it was delivered.
+
+curl -s localhost:8096/checks
+Lists every check the shim offers, with its parameters and the identity it runs as.
+
+
+5. STOP, WIPE, UPGRADE
+
+scripts/down.sh
+Stops the stack and keeps its data.
+
+scripts/reset.sh -y
+Destroys the stack's data: every nfl volume, the pipeline's S3 objects, the inbox and the /nfl/ log groups. The next scripts/up.sh is a true cold start. infra/nfl.env and the SFTP keys are kept.
+
+scripts/init-env.sh --add-missing
+Only for an infra/nfl.env generated before 2026-10-07: appends the 5 secrets the observability work added and changes nothing already there, so no wipe is needed. Then run scripts/up.sh.
+
+
+WHAT A FRESH START DOES NOT GIVE YOU
+A real AWS account, real DMS, Hop or Spark, a real alert channel (the inbox is local and nobody is paged), or a dashboard. See WHAT-DOES-WHAT.txt for what each piece is and docs/COVERAGE.md for what each requirement is and is not proven by.
